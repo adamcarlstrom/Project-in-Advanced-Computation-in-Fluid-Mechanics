@@ -17,27 +17,14 @@
 # Load neccessary modules.
 # from google.colab import files
 
+import gc
+
 import numpy as np
 import time
-import subprocess
-
-# Install FEniCS (this may take a long time)
-try:
-    import dolfin
-except ImportError:
-    subprocess.run(
-        'wget "https://fem-on-colab.github.io/releases/fenics-install-release-real.sh" -O "/tmp/fenics-install.sh" && bash "/tmp/fenics-install.sh"',
-        shell=True,
-        check=True,
-    )
-    import dolfin
-
-from dolfin import *; from mshr import *
-
+from dolfin import *
+from mshr import *
 import dolfin.common.plotting as fenicsplot
-
 from matplotlib import pyplot as plt
-
 
 # Define rectangular domain
 L = 4
@@ -73,18 +60,24 @@ upper = Upper()
 # Generate mesh (examples with and without a hole in the mesh)
 resolution = 32
 #mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
-mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
+def build_mesh(xc,yc,resolution=32):
 
-# Local mesh refinement (specified by a cell marker)
-no_levels = 0
-for i in range(0,no_levels):
-  cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
-  for cell in cells(mesh):
-    cell_marker[cell] = False
-    p = cell.midpoint()
-    if p.distance(Point(xc, yc)) < 1.0:
-        cell_marker[cell] = True
-  mesh = refine(mesh, cell_marker)
+  mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
+
+  # Local mesh refinement (specified by a cell marker)
+  no_levels = 1
+  for i in range(0,no_levels):
+    cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
+    for cell in cells(mesh):
+      cell_marker[cell] = False
+      p = cell.midpoint()
+      if p.distance(Point(xc, yc)) < 0.5:
+          cell_marker[cell] = True
+    mesh = refine(mesh, cell_marker)
+
+  return mesh
+
+mesh = build_mesh(xc,yc,resolution)
 
 # Define mesh functions (for boundary conditions)
 boundaries = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
@@ -94,8 +87,8 @@ right.mark(boundaries, 2)
 lower.mark(boundaries, 3)
 upper.mark(boundaries, 4)
 
-plt.figure()
-plot(mesh)
+# plt.figure()
+# plot(mesh)
 # plt.show()
 
 
@@ -103,11 +96,20 @@ plot(mesh)
 V = VectorFunctionSpace(mesh, "Lagrange", 1)
 Q = FunctionSpace(mesh, "Lagrange", 1)
 
+V_mesh = VectorFunctionSpace(mesh, "CG", 1)
+mesh_disp = Function(V_mesh)
+
 # Define trial and test functions
 u = TrialFunction(V)
 p = TrialFunction(Q)
 v = TestFunction(V)
 q = TestFunction(Q)
+
+u_mesh = TrialFunction(V_mesh)
+v_mesh = TestFunction(V_mesh)
+a_mesh = inner(grad(u_mesh), grad(v_mesh))*dx
+L_mesh = inner(Constant((0.0, 0.0)), v_mesh)*dx
+
 
 
 # Define boundary conditions
@@ -161,7 +163,7 @@ bcp = [bcp1]
 
 # Define measure for boundary integration
 ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
-
+dx = Measure('dx', domain=mesh)
 
 # Set viscosity
 nu = 4.0e-3
@@ -175,14 +177,15 @@ u1 = Function(V)
 p0 = Function(Q)
 p1 = Function(Q)
 
-# Define mesh deformation w, mesh velocity = w/dt
-#amp_x = 0.0 # Move in y-direction
-#amp_y = 1.0e-2
-amp_x = 1.0e-2 # Move in x-direction
-amp_y = 0.0
+# Define mesh deformation, mesh velocity = w/dt
 freq = 0.1
 t = 0.0
+amp_x = 1.0e-2 # Move in x-direction
+amp_y = 0.0
 w = Expression(("amp_x*sin(2.0*pi*t*freq)*sin(pi*x[0]/L)","amp_y*sin(2.0*pi*t*freq-0.5*pi)*sin(pi*x[1]/H)"), L=L, H=H, t=t, amp_x=amp_x, amp_y=amp_y, freq=freq, element = V.ufl_element())
+
+
+# w = mesh_disp / dt
 
 # Set parameters for nonlinear and lienar solvers
 num_nnlin_iter = 5
@@ -193,9 +196,14 @@ dt = 0.5*mesh.hmin()
 
 
 # Define variational problem
+R_in = 0.4  # Slightly larger than cylinder radius
+R_out = 1.5 # Gives a wide buffer zone for the mesh to stretch smoothly
+
+vx = 0.1
+vy = 0.0
 
 # Stabilization parameters
-h = CellDiameter(mesh);
+h = CellDiameter(mesh)
 u_mag = sqrt(dot(u1,u1))
 d1 = 1.0/sqrt((pow(1.0/dt,2.0) + pow(u_mag/h,2.0)))
 d2 = h*u_mag
@@ -249,10 +257,141 @@ time = np.array(0.0)
 time = np.delete(time, 0)
 start_sample_time = 1.0
 
+def move_mesh(mesh, current_xc, current_yc):
+  # Create a Vector space for the mesh displacement
+  V_mesh = VectorFunctionSpace(mesh, "CG", 1)
+
+  # Define Boundary Conditions for the MESH
+  # The outer walls of the channel do not move
+  bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), "on_boundary && (x[1] < 1e-7 || x[1] > 2.0 - 1e-7 || x[0] < 1e-7 || x[0] > 4.0 - 1e-7)")
+
+  # The cylinder boundary moves by the cylinder velocity * dt
+  bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
+
+  # Solve the Laplace equation for smooth mesh displacement (u_mesh)
+  u_mesh = TrialFunction(V_mesh)
+  v_mesh = TestFunction(V_mesh)
+  mesh_disp = Function(V_mesh)
+
+  a_mesh = inner(grad(u_mesh), grad(v_mesh))*dx
+  L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx # zero source term
+
+  solve(a_mesh == L_mesh, mesh_disp, [bc_walls, bc_cyl])
+
+  # Physically move the mesh nodes
+  ALE.move(mesh, mesh_disp)
+
+  # Update cylinder coordinates for the next step
+  current_xc += vx * dt
+  current_yc += vy * dt
+  return current_xc, current_yc
+
+def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
+    global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force, bcu, bcp, ds, u0, p0, u1, p1, dx, w
+
+    # Track how far the cylinder has moved since the last remesh
+    distance_since_remesh_arg += sqrt((vx*dt)**2 + (vy*dt)**2)
+
+    mesh_Change = False
+
+    # If the cylinder has moved enough, trigger remesh
+    if distance_since_remesh_arg > 0.5:
+        mesh_Change = True
+        print("Mesh quality degrading. Triggering Remesh and Interpolation...")
+
+        # Build the pristine new mesh at the current location
+        mesh = build_mesh(current_xc_arg, current_yc_arg)
+
+        # Re-define dx for the new mesh
+        dx = Measure('dx', domain=mesh)
+
+        # Define Function Spaces on the new mesh
+        V = VectorFunctionSpace(mesh, "P", 2)
+        Q = FunctionSpace(mesh, "P", 1)
+
+        # Transfer the data safely using Interpolate
+        u0 = Function(V)
+        u0_func.set_allow_extrapolation(True)
+        u0.interpolate(u0_func)
+        p0 = Function(Q)
+        p0_func.set_allow_extrapolation(True)
+        p0.interpolate(p0_func)
+
+        # Re-initialize other Functions on the new mesh
+        u1 = Function(V)
+        p1 = Function(Q)
+
+        # Rebuilding Boundaries
+        bcu_in0 = DirichletBC(V.sub(0), uin, dbc_left)
+        bcu_in1 = DirichletBC(V.sub(1), 0.0, dbc_left)
+        bcu_upp0 = DirichletBC(V.sub(0), 0.0, dbc_upper)
+        bcu_upp1 = DirichletBC(V.sub(1), 0.0, dbc_upper)
+        bcu_low0 = DirichletBC(V.sub(0), 0.0, dbc_lower)
+        bcu_low1 = DirichletBC(V.sub(1), 0.0, dbc_lower)
+        bcu_obj0 = DirichletBC(V.sub(0), vx, dbc_objects)
+        bcu_obj1 = DirichletBC(V.sub(1), vy, dbc_objects)
+
+        pout = 0.0
+        bcp1 = DirichletBC(Q, pout, dbc_right)
+
+        bcu = [bcu_in0, bcu_in1, bcu_upp1, bcu_low1, bcu_obj0, bcu_obj1]
+        bcp = [bcp1]
+
+        boundaries = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
+        boundaries.set_all(0)
+
+        dbc_left.mark(boundaries, 1)
+        dbc_right.mark(boundaries, 2)
+        dbc_upper.mark(boundaries, 3)
+        dbc_lower.mark(boundaries, 4)
+        dbc_objects.mark(boundaries, 5)
+
+        ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
+
+        # Rebuild Navier-Stokes weak forms
+        u = TrialFunction(V)
+        p = TrialFunction(Q)
+        v = TestFunction(V)
+        q = TestFunction(Q)
+
+        h = CellDiameter(mesh)
+        u_mag_recalc = sqrt(dot(u0,u0))
+        d1_recalc = 1.0/sqrt((pow(1.0/dt,2.0) + pow(u_mag_recalc/h,2.0)))
+        d2_recalc = h*u_mag_recalc
+
+        um = 0.5*(u + u0)
+        um1 = 0.5*(u1 + u0)
+
+        Fu = inner((u - u0)/dt + grad(um)*(um1-w/dt), v)*dx - p1*div(v)*dx + nu*inner(grad(um), grad(v))*dx \
+             + d1_recalc*inner((u - u0)/dt + grad(um)*(um1-w/dt) + grad(p1), grad(v)*(um1-w/dt))*dx + d2_recalc*div(um)*div(v)*dx
+        au = lhs(Fu)
+        Lu = rhs(Fu)
+
+        Fp = d1_recalc*inner((u1 - u0)/dt + grad(um1)*(um1-w/dt) + grad(p_trial), grad(q))*dx + div(um1)*q*dx
+        ap = lhs(Fp)
+        Lp = rhs(Fp)
+
+        psi_expression.xc = current_xc_arg
+        psi_expression.yc = current_yc_arg
+
+        psi = interpolate(psi_expression, V)
+        Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
+
+        # Reset trackers and clean up memory
+        distance_since_remesh_arg = 0.0
+
+        del Fu, Fp, um, um1, psi
+        gc.collect()
+        
+    return distance_since_remesh_arg, mesh_Change
 
 # Time stepping
-T = 15
+T = 11
 t = dt
+distance_since_remesh = 0
+current_xc = xc
+current_yc = yc
+countDown = 0
 
 while t < T + DOLFIN_EPS:
 
@@ -263,7 +402,12 @@ while t < T + DOLFIN_EPS:
     #uin.t = t
 
     w.t = t
-    ALE.move(mesh, w)
+    current_xc, current_yc = move_mesh(mesh,current_xc,current_yc)
+    psi_expression.xc = current_xc  # Update the bubble's X position
+    psi_expression.yc = current_yc
+    psi.interpolate(psi_expression)
+
+    distance_since_remesh, mesh_Change = remesh(distance_since_remesh, current_xc,current_yc, u0, p0, u1, p1)
 
     # Solve non-linear problem
     k = 0
@@ -290,14 +434,18 @@ while t < T + DOLFIN_EPS:
         
 
         k += 1
-
+        
+    if mesh_Change:
+      countDown = 20
     # Compute force
     F = assemble(Force)
-    if (t > start_sample_time):
+    if (t > start_sample_time) and countDown <= 0:
       force_array = np.append(force_array, normalization*F)
       time = np.append(time, t)
+    else:
+      countDown -= 1
 
-    if t > plot_time:
+    if t > plot_time or mesh_Change:
 
         s = 'Time t = ' + repr(t)
         print(s)
@@ -331,6 +479,10 @@ while t < T + DOLFIN_EPS:
     # Update time step
     u0.assign(u1)
     t += dt
+
+force_array = np.append(force_array, normalization*F)
+print("Force Array:", force_array)
+time = np.append(time, t)
 
 s = 'Time t = ' + repr(t)
 print(s)
