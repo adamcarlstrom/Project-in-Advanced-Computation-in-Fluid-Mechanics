@@ -259,7 +259,7 @@ start_sample_time = 1.0
 
 def move_mesh(mesh, current_xc, current_yc):
   # Create a Vector space for the mesh displacement
-  V_mesh = VectorFunctionSpace(mesh, "CG", 1)
+  V_mesh = VectorFunctionSpace(mesh, "Lagrange", 1)
 
   # Define Boundary Conditions for the MESH
   # The outer walls of the channel do not move
@@ -306,8 +306,8 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
         dx = Measure('dx', domain=mesh)
 
         # Define Function Spaces on the new mesh
-        V = VectorFunctionSpace(mesh, "P", 2)
-        Q = FunctionSpace(mesh, "P", 1)
+        V = VectorFunctionSpace(mesh, "Lagrange", 1)
+        Q = FunctionSpace(mesh, "Lagrange", 1)
 
         # Transfer the data safely using Interpolate
         u0 = Function(V)
@@ -367,7 +367,7 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
         au = lhs(Fu)
         Lu = rhs(Fu)
 
-        Fp = d1_recalc*inner((u1 - u0)/dt + grad(um1)*(um1-w/dt) + grad(p_trial), grad(q))*dx + div(um1)*q*dx
+        Fp = d1_recalc*inner((u1 - u0)/dt + grad(um1)*(um1-w/dt) + grad(p), grad(q))*dx + div(um1)*q*dx
         ap = lhs(Fp)
         Lp = rhs(Fp)
 
@@ -386,7 +386,7 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
     return distance_since_remesh_arg, mesh_Change
 
 # Time stepping
-T = 11
+T = 28.0
 t = dt
 distance_since_remesh = 0
 current_xc = xc
@@ -436,17 +436,18 @@ while t < T + DOLFIN_EPS:
         k += 1
         
     if mesh_Change:
-      countDown = 20
+      countDown = 15
     # Compute force
     F = assemble(Force)
     if (t > start_sample_time) and countDown <= 0:
+    # if(t > start_sample_time):
       force_array = np.append(force_array, normalization*F)
       time = np.append(time, t)
     else:
       countDown -= 1
-
-    if t > plot_time or mesh_Change:
-
+      
+    # if t > plot_time or mesh_Change:
+    if t > plot_time or mesh_Change and  countDown <= 0:
         s = 'Time t = ' + repr(t)
         print(s)
 
@@ -480,9 +481,11 @@ while t < T + DOLFIN_EPS:
     u0.assign(u1)
     t += dt
 
+np.set_printoptions(threshold=np.inf)
 force_array = np.append(force_array, normalization*F)
-print("Force Array:", force_array)
 time = np.append(time, t)
+with open("force.txt", "w") as f:
+  f.write(str(force_array) + "\n" + str(time))
 
 s = 'Time t = ' + repr(t)
 print(s)
