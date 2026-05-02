@@ -92,7 +92,7 @@ def build_mesh(xc,yc,resolution=32):
       p = cell.midpoint()
       px,py = p[0],p[1]
     #   if p.distance(Point(xc, yc)) < 0.5:
-      if    ((xc - t_L/2.0 - buffer) < px < (xc + t_L/2.0 + t_R + buffer) and 
+      if    ((xc - t_L/2.0 - buffer*3) < px < (xc + t_L/2.0 + t_R + buffer) and 
             (yc - t_H/2.0 - buffer) < py < (yc + t_H/2.0 + buffer)):
           cell_marker[cell] = True
     mesh = refine(mesh, cell_marker)
@@ -187,7 +187,7 @@ ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 dx = Measure('dx', domain=mesh)
 
 # Set viscosity
-nu = 4.0e-3
+nu = 1.0e-4
 
 
 # Define iteration functions
