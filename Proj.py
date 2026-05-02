@@ -27,13 +27,20 @@ import dolfin.common.plotting as fenicsplot
 from matplotlib import pyplot as plt
 
 # Define rectangular domain
-L = 4
-H = 2
+L = 8
+H = 3
 
-# Define circle
+# Circular dimensions
+# xc = 1.0
+# yc = 0.5*H
+# rc = 0.2
+
+# Train dimensions
 xc = 1.0
 yc = 0.5*H
-rc = 0.2
+t_L = 0.6
+t_H = 0.2
+t_R = t_H/2.0
 
 # Define subdomains (for boundary conditions)
 class Left(SubDomain):
@@ -61,17 +68,32 @@ upper = Upper()
 resolution = 32
 #mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
 def build_mesh(xc,yc,resolution=32):
-
-  mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
+#   mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
+  
+  p1 = Point(xc - t_L/2.0, yc - t_H/2.0)
+  p2 = Point(xc + t_L/2.0, yc + t_H/2.0)
+  body = Rectangle(p1, p2)
+  
+  head_center = Point(xc + t_L/2.0, yc)
+  head = Circle(head_center, t_R)
+  
+  train = body + head
+  
+  domain = Rectangle(Point(0.0, 0.0), Point(L, H)) - train
+  mesh = generate_mesh(domain, resolution)
 
   # Local mesh refinement (specified by a cell marker)
   no_levels = 1
+  buffer = 0.25
   for i in range(0,no_levels):
     cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
+    cell_marker.set_all(False)
     for cell in cells(mesh):
-      cell_marker[cell] = False
       p = cell.midpoint()
-      if p.distance(Point(xc, yc)) < 0.5:
+      px,py = p[0],p[1]
+    #   if p.distance(Point(xc, yc)) < 0.5:
+      if    ((xc - t_L/2.0 - buffer) < px < (xc + t_L/2.0 + t_R + buffer) and 
+            (yc - t_H/2.0 - buffer) < py < (yc + t_H/2.0 + buffer)):
           cell_marker[cell] = True
     mesh = refine(mesh, cell_marker)
 
@@ -224,9 +246,17 @@ Lp = rhs(Fp)
 phi_x = 1.0 # drag
 phi_y = 0.0 # lift
 
-#psi_expression = Expression(("0.0","pow(x[0]-0.5,2.0) + pow(x[1]-1.0,2.0) - pow(0.2,2.0) < 1.e-5 ? 1. : 0."), element = V.ufl_element())
-psi_expression = Expression(("near(pow(x[0]-xc,2.0) + pow(x[1]-yc,2.0) - pow(rc,2.0), 0.0) ? phi_x : 0.","near(pow(x[0]-xc,2.0) + pow(x[1]-yc,2.0) - pow(rc,2.0), 0.0) ? phi_y : 0."), xc=xc, yc=yc, rc=rc, phi_x=phi_x, phi_y=phi_y, element = V.ufl_element())
-psi = interpolate(psi_expression, V)
+# Create an empty function space for psi
+psi = Function(V)
+
+# Apply a value of 1.0 (phi_x) in the x-direction directly to the nodes on the train boundary
+bc_psi_x = DirichletBC(V.sub(0), Constant(phi_x), dbc_objects)
+bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects)
+
+# Apply these boundary conditions to our empty psi vector. 
+# This automatically makes psi = 1 on the train boundary and 0 everywhere else!
+bc_psi_x.apply(psi.vector())
+bc_psi_y.apply(psi.vector())
 
 Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
 
@@ -234,7 +264,7 @@ Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(
 #plot(psi, title="weight function psi")
 
 # Force normalization
-D = 2*rc
+D = t_H
 normalization = -2.0/D
 
 
@@ -244,7 +274,7 @@ file_p = File("results-NS/p.pvd")
 
 # Set plot frequency
 plot_time = 0
-plot_freq = 10
+plot_freq = 18
 
 # Force computation data
 force_array = np.array(0.0)
@@ -259,7 +289,7 @@ def move_mesh(mesh, current_xc, current_yc):
 
   # Define Boundary Conditions for the MESH
   # The outer walls of the channel do not move
-  bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), "on_boundary && (x[1] < 1e-7 || x[1] > 2.0 - 1e-7 || x[0] < 1e-7 || x[0] > 4.0 - 1e-7)")
+  bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), f"on_boundary && (x[1] < 1e-7 || x[1] > {H} - 1e-7 || x[0] < 1e-7 || x[0] > {L} - 1e-7)")
 
   # The cylinder boundary moves by the cylinder velocity * dt
   bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
@@ -365,10 +395,13 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
         ap = lhs(Fp)
         Lp = rhs(Fp)
 
-        psi_expression.xc = current_xc_arg
-        psi_expression.yc = current_yc_arg
+        # Shape-independent psi reconstruction
+        psi = Function(V)
+        bc_psi_x = DirichletBC(V.sub(0), Constant(phi_x), dbc_objects)
+        bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects)
+        bc_psi_x.apply(psi.vector())
+        bc_psi_y.apply(psi.vector())
 
-        psi = interpolate(psi_expression, V)
         Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
 
         # Reset trackers and clean up memory
@@ -394,9 +427,6 @@ while t < T + DOLFIN_EPS:
 
     w.t = t
     current_xc, current_yc = move_mesh(mesh,current_xc,current_yc)
-    psi_expression.xc = current_xc  # Update the bubble's X position
-    psi_expression.yc = current_yc
-    psi.interpolate(psi_expression)
 
     distance_since_remesh, mesh_Change = remesh(distance_since_remesh, current_xc,current_yc, u0, p0, u1, p1)
 
