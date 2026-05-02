@@ -110,6 +110,8 @@ v_mesh = TestFunction(V_mesh)
 a_mesh = inner(grad(u_mesh), grad(v_mesh))*dx
 L_mesh = inner(Constant((0.0, 0.0)), v_mesh)*dx
 
+vx = 0.1
+vy = 0.0
 
 
 # Define boundary conditions
@@ -139,27 +141,24 @@ dbc_left = DirichletBoundaryLeft()
 dbc_right = DirichletBoundaryRight()
 dbc_objects = DirichletBoundaryObjects()
 
-# Examples of time dependent and stationary inflow conditions
-#uin = Expression('4.0*x[1]*(1-x[1])', element = V.sub(0).ufl_element())
-#uin = Expression('1.0 + 1.0*fabs(sin(t))', element = V.sub(0).ufl_element(), t=0.0)
-uin = 1.0
-bcu_in0 = DirichletBC(V.sub(0), uin, dbc_left)
-bcu_in1 = DirichletBC(V.sub(1), 0.0, dbc_left)
-bcu_upp0 = DirichletBC(V.sub(0), 0.0, dbc_upper)
-bcu_upp1 = DirichletBC(V.sub(1), 0.0, dbc_upper)
-bcu_low0 = DirichletBC(V.sub(0), 0.0, dbc_lower)
-bcu_low1 = DirichletBC(V.sub(1), 0.0, dbc_lower)
-bcu_obj0 = DirichletBC(V.sub(0), 0.0, dbc_objects)
-bcu_obj1 = DirichletBC(V.sub(1), 0.0, dbc_objects)
+# The object (cylinder) pushes the fluid
+bcu_obj0 = DirichletBC(V.sub(0), vx, dbc_objects)
+bcu_obj1 = DirichletBC(V.sub(1), vy, dbc_objects)
 
-pin = Expression('5.0*fabs(sin(t))', element = Q.ufl_element(), t=0.0)
+# Velocity BC list only contains the moving object
+bcu = [bcu_obj0, bcu_obj1]
+
+# Create a subdomain for ALL outer walls to apply pressure
+class DirichletBoundaryOuter(SubDomain):
+    def inside(self, x, on_boundary):
+        return on_boundary and (near(x[0], 0.0) or near(x[0], L) or near(x[1], 0.0) or near(x[1], H))
+
+dbc_outer = DirichletBoundaryOuter()
 pout = 0.0
-#bcp0 = DirichletBC(Q, pin, dbc_left)
-bcp1 = DirichletBC(Q, pout, dbc_right)
 
-#bcu = [bcu_in0, bcu_in1, bcu_upp0, bcu_upp1, bcu_low0, bcu_low1, bcu_obj0, bcu_obj1]
-bcu = [bcu_in0, bcu_in1, bcu_upp1, bcu_low1, bcu_obj0, bcu_obj1]
-bcp = [bcp1]
+# Apply 0 pressure to all outer walls (Do-Nothing open boundary)
+bcp_outer = DirichletBC(Q, pout, dbc_outer)
+bcp = [bcp_outer]
 
 # Define measure for boundary integration
 ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
@@ -198,9 +197,6 @@ dt = 0.5*mesh.hmin()
 # Define variational problem
 R_in = 0.4  # Slightly larger than cylinder radius
 R_out = 1.5 # Gives a wide buffer zone for the mesh to stretch smoothly
-
-vx = 0.1
-vy = 0.0
 
 # Stabilization parameters
 h = CellDiameter(mesh)
@@ -322,20 +318,18 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
         p1 = Function(Q)
 
         # Rebuilding Boundaries
-        bcu_in0 = DirichletBC(V.sub(0), uin, dbc_left)
-        bcu_in1 = DirichletBC(V.sub(1), 0.0, dbc_left)
-        bcu_upp0 = DirichletBC(V.sub(0), 0.0, dbc_upper)
-        bcu_upp1 = DirichletBC(V.sub(1), 0.0, dbc_upper)
-        bcu_low0 = DirichletBC(V.sub(0), 0.0, dbc_lower)
-        bcu_low1 = DirichletBC(V.sub(1), 0.0, dbc_lower)
+        # Rebuilding Boundaries for open walls
         bcu_obj0 = DirichletBC(V.sub(0), vx, dbc_objects)
         bcu_obj1 = DirichletBC(V.sub(1), vy, dbc_objects)
+        
+        # Only the cylinder has constrained velocity
+        bcu = [bcu_obj0, bcu_obj1]
 
         pout = 0.0
-        bcp1 = DirichletBC(Q, pout, dbc_right)
-
-        bcu = [bcu_in0, bcu_in1, bcu_upp1, bcu_low1, bcu_obj0, bcu_obj1]
-        bcp = [bcp1]
+        # Use string logic to catch all 4 outer walls on the new mesh
+        bcp_outer = DirichletBC(Q, pout, "on_boundary && (x[0] < 1e-7 || x[0] > 4.0 - 1e-7 || x[1] < 1e-7 || x[1] > 2.0 - 1e-7)")
+        
+        bcp = [bcp_outer]
 
         boundaries = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
         boundaries.set_all(0)
@@ -386,7 +380,7 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
     return distance_since_remesh_arg, mesh_Change
 
 # Time stepping
-T = 28.0
+T = 6.0
 t = dt
 distance_since_remesh = 0
 current_xc = xc
@@ -397,9 +391,6 @@ while t < T + DOLFIN_EPS:
 
     #s = 'Time t = ' + repr(t)
     #print(s)
-
-    pin.t = t
-    #uin.t = t
 
     w.t = t
     current_xc, current_yc = move_mesh(mesh,current_xc,current_yc)
