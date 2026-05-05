@@ -67,7 +67,7 @@ upper = Upper()
 # Generate mesh (examples with and without a hole in the mesh)
 resolution = 32
 #mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
-def build_mesh(xc,yc,resolution=32):
+def build_mesh(xc,yc,resolution = resolution):
 #   mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
   
   p1 = Point(xc - t_L/2.0, yc - t_H/2.0)
@@ -83,7 +83,7 @@ def build_mesh(xc,yc,resolution=32):
   mesh = generate_mesh(domain, resolution)
 
   # Local mesh refinement (specified by a cell marker)
-  no_levels = 1
+  no_levels = 1 
   buffer = 0.25
   for i in range(0,no_levels):
     cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
@@ -312,18 +312,18 @@ def move_mesh(mesh, current_xc, current_yc):
   current_yc += vy * dt
   return current_xc, current_yc
 
-def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
+def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force, bcu, bcp, ds, u0, p0, u1, p1, dx, w
-
-    # Track how far the cylinder has moved since the last remesh
-    distance_since_remesh_arg += sqrt((vx*dt)**2 + (vy*dt)**2)
 
     mesh_Change = False
 
     # If the cylinder has moved enough, trigger remesh
-    if distance_since_remesh_arg > 0.5:
+    min_q, max_q = MeshQuality.radius_ratio_min_max(mesh)
+    
+    # if distance_since_remesh_arg > 0.5:
+    if(min_q < 0.15): # If the mesh quality degrades too much, trigger remesh
         mesh_Change = True
-        print("Mesh quality degrading. Triggering Remesh and Interpolation...")
+        print("Mesh quality degrading. Triggering Remesh and Interpolation...\n Min radius ratio: " + str(min_q) + " Max radius ratio: " + str(max_q))
 
         # Build the pristine new mesh at the current location
         mesh = build_mesh(current_xc_arg, current_yc_arg)
@@ -339,9 +339,11 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
         u0 = Function(V)
         u0_func.set_allow_extrapolation(True)
         u0.interpolate(u0_func)
+        # u0 = project(u0_func, V, solver_type="cg", preconditioner_type="amg")
         p0 = Function(Q)
         p0_func.set_allow_extrapolation(True)
         p0.interpolate(p0_func)
+        # p0 = project(p0_func, Q, solver_type="cg", preconditioner_type="amg")
 
         # Re-initialize other Functions on the new mesh
         u1 = Function(V)
@@ -404,18 +406,14 @@ def remesh(distance_since_remesh_arg, current_xc_arg, current_yc_arg, u0_func, p
 
         Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
 
-        # Reset trackers and clean up memory
-        distance_since_remesh_arg = 0.0
-
         del Fu, Fp, um, um1, psi
         gc.collect()
         
-    return distance_since_remesh_arg, mesh_Change
+    return mesh_Change
 
 # Time stepping
-T = 6.0
+T = 12.0
 t = dt
-distance_since_remesh = 0
 current_xc = xc
 current_yc = yc
 countDown = 0
@@ -428,7 +426,7 @@ while t < T + DOLFIN_EPS:
     w.t = t
     current_xc, current_yc = move_mesh(mesh,current_xc,current_yc)
 
-    distance_since_remesh, mesh_Change = remesh(distance_since_remesh, current_xc,current_yc, u0, p0, u1, p1)
+    mesh_Change = remesh(current_xc,current_yc, u0, p0, u1, p1)
 
     # Solve non-linear problem
     k = 0
@@ -460,15 +458,24 @@ while t < T + DOLFIN_EPS:
       countDown = 15
     # Compute force
     F = assemble(Force)
-    if (t > start_sample_time) and countDown <= 0:
-    # if(t > start_sample_time):
-      force_array = np.append(force_array, normalization*F)
-      time = np.append(time, t)
-    else:
-      countDown -= 1
-      
-    # if t > plot_time or mesh_Change:
-    if t > plot_time or mesh_Change and  countDown <= 0:
+    calculated_force = normalization * F
+    weight = 1.0
+    if (t > start_sample_time) : # inspired by Miguel De Le Court smoothing approach
+        if countDown > 0:
+            weight = 0.0005 # weight set very small so that the force is kept at realistic values, 
+            # connected to old value, but still is impacted by newly calculated values after remesh
+            countDown -= 1
+            
+        if len(force_array) > 0:
+            old_force = force_array[-1] 
+            smoothed_force = (1.0 - weight) * old_force + weight * calculated_force
+        else:
+            smoothed_force = calculated_force
+
+        force_array = np.append(force_array, smoothed_force)
+        time = np.append(time, t)
+        
+    if t > plot_time or mesh_Change:
         s = 'Time t = ' + repr(t)
         print(s)
 
@@ -477,25 +484,26 @@ while t < T + DOLFIN_EPS:
         # file_p << p1
         
         plt.figure(figsize=(12, 10))
+        plt.title(f"Time t = {t:.2f} & Mesh Change: {mesh_Change}")
 
         # Plot solution
         plt.subplot(2, 2, 1)
         # plt.figure()
-        plot(u1, title=f"Velocity:{t:.2f}")
+        plot(u1, title=f"Velocity")
 
         # plt.figure()
         plt.subplot(2, 2, 2)
-        plot(p1, title=f"Pressure:{t:.2f}")
+        plot(p1, title=f"Pressure")
 
         # plt.figure()
         plt.subplot(2, 2, 3)
-        plot(mesh, title=f"Mesh:{t:.2f}")
+        plot(mesh, title=f"Mesh")
 
         plot_time += T/plot_freq
 
         # plt.figure()
         plt.subplot(2, 2, 4)
-        plt.title(f"Force:{t:.2f}")
+        plt.title(f"Force")
         plt.plot(time, force_array)
 
     # Update time step
