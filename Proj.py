@@ -36,9 +36,9 @@ H = 3
 # rc = 0.2
 
 # Train dimensions
-xc = 1.0
+xc = 1.5
 yc = 0.5*H
-t_L = 0.6
+t_L = 2.0
 t_H = 0.2
 t_R = t_H/2.0
 
@@ -187,7 +187,7 @@ ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 dx = Measure('dx', domain=mesh)
 
 # Set viscosity
-nu = 1.0e-4
+nu = 1.0e-5
 
 
 # Define iteration functions
@@ -290,6 +290,7 @@ def move_mesh(mesh, current_xc, current_yc):
   # Define Boundary Conditions for the MESH
   # The outer walls of the channel do not move
   bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), f"on_boundary && (x[1] < 1e-7 || x[1] > {H} - 1e-7 || x[0] < 1e-7 || x[0] > {L} - 1e-7)")
+  # ########################## CHANGE TO NOT RELY ON C++ STRINGS ###########################################################################################################################################
 
   # The cylinder boundary moves by the cylinder velocity * dt
   bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
@@ -359,8 +360,8 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
 
         pout = 0.0
         # Use string logic to catch all 4 outer walls on the new mesh
-        bcp_outer = DirichletBC(Q, pout, "on_boundary && (x[0] < 1e-7 || x[0] > 4.0 - 1e-7 || x[1] < 1e-7 || x[1] > 2.0 - 1e-7)")
-        
+        dbc_outer_remesh = DirichletBoundaryOuter()
+        bcp_outer = DirichletBC(Q, pout, dbc_outer_remesh)
         bcp = [bcp_outer]
 
         boundaries = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
@@ -412,11 +413,12 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     return mesh_Change
 
 # Time stepping
-T = 12.0
+T = 28.0
 t = dt
 current_xc = xc
 current_yc = yc
 countDown = 0
+last_mesh_change_time = 0
 
 while t < T + DOLFIN_EPS:
 
@@ -456,13 +458,15 @@ while t < T + DOLFIN_EPS:
         
     if mesh_Change:
       countDown = 15
+      last_mesh_change_time = t
     # Compute force
     F = assemble(Force)
     calculated_force = normalization * F
-    weight = 1.0
+    weight = 1.0 # change to iterated value increasing from 0 after remesh to smoothly transition from old force values to new ones after remesh
+    ################################ FIX ######################################################################################################################################
     if (t > start_sample_time) : # inspired by Miguel De Le Court smoothing approach
         if countDown > 0:
-            weight = 0.0005 # weight set very small so that the force is kept at realistic values, 
+            weight = 0.001 # weight set very small so that the force is kept at realistic values, 
             # connected to old value, but still is impacted by newly calculated values after remesh
             countDown -= 1
             
@@ -484,7 +488,7 @@ while t < T + DOLFIN_EPS:
         # file_p << p1
         
         plt.figure(figsize=(12, 10))
-        plt.title(f"Time t = {t:.2f} & Mesh Change: {mesh_Change}")
+        plt.suptitle(f"Time t = {t:.2f} & Mesh Change: {mesh_Change}, last mesh change at t = {last_mesh_change_time:.2f}", fontsize=16)
 
         # Plot solution
         plt.subplot(2, 2, 1)
