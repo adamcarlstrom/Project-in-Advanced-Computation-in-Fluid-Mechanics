@@ -289,9 +289,9 @@ def move_mesh(mesh, current_xc, current_yc):
 
   # Define Boundary Conditions for the MESH
   # The outer walls of the channel do not move
-  bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), f"on_boundary && (x[1] < 1e-7 || x[1] > {H} - 1e-7 || x[0] < 1e-7 || x[0] > {L} - 1e-7)")
-  # ########################## CHANGE TO NOT RELY ON C++ STRINGS ###########################################################################################################################################
-
+  dbc_walls = DirichletBoundaryOuter()
+  bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), dbc_walls)
+    
   # The cylinder boundary moves by the cylinder velocity * dt
   bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
 
@@ -413,12 +413,13 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     return mesh_Change
 
 # Time stepping
-T = 28.0
+T = 5
 t = dt
 current_xc = xc
 current_yc = yc
 countDown = 0
 last_mesh_change_time = 0
+last_good_force = 0.0 
 
 while t < T + DOLFIN_EPS:
 
@@ -455,27 +456,47 @@ while t < T + DOLFIN_EPS:
         
 
         k += 1
-        
+    remesh_duration = 20
     if mesh_Change:
-      countDown = 15
-      last_mesh_change_time = t
-    # Compute force
+        last_mesh_change_time = t
+        countDown = remesh_duration
+        # Save the pure, uncorrupted force from BEFORE the remesh
+        if len(force_array) > 0:
+            last_good_force = force_array[-1]
+            print(f"I am in hrer {last_good_force}")
+
+    # Compute raw force
     F = assemble(Force)
     calculated_force = normalization * F
-    weight = 1.0 # change to iterated value increasing from 0 after remesh to smoothly transition from old force values to new ones after remesh
-    ################################ FIX ######################################################################################################################################
-    if (t > start_sample_time) : # inspired by Miguel De Le Court smoothing approach
+    
+    if (t > start_sample_time):
         if countDown > 0:
-            weight = 0.001 # weight set very small so that the force is kept at realistic values, 
-            # connected to old value, but still is impacted by newly calculated values after remesh
-            countDown -= 1
+            print(f"Remesh Recovery in progress... Countdown: {countDown}")
+            # We are inside the remesh recovery window
             
-        if len(force_array) > 0:
-            old_force = force_array[-1] 
-            smoothed_force = (1.0 - weight) * old_force + weight * calculated_force
+            if countDown > (remesh_duration / 2):
+                # PHASE 1: THE HOLD
+                # The pressure solver is exploding right now. Ignore it completely.
+                # Just hold the last known good aerodynamic force.
+                smoothed_force = last_good_force
+                print(f"HOLDING last good force: {last_good_force}")
+            else:
+                # PHASE 2: THE TRANSITION
+                # The solver has settled. Smoothly ramp from the old force to the new force.
+                # Calculate how far along we are in the second half of the countdown (0.0 to 1.0)
+                half_duration = remesh_duration / 2.0
+                progress = (half_duration - countDown) / half_duration 
+                
+                # Linearly blend the old reality with the new reality
+                smoothed_force = (1.0 - progress) * last_good_force + (progress) * calculated_force
+                print(f"TRANSITIONING from last good force {last_good_force} to new calculated force {calculated_force}. Progress: {progress:.2f}, Smoothed Force: {smoothed_force}")
+            
+            countDown -= 1
         else:
+            # Normal operation
             smoothed_force = calculated_force
-
+            
+        # Append the cleaned data
         force_array = np.append(force_array, smoothed_force)
         time = np.append(time, t)
         
@@ -518,7 +539,8 @@ np.set_printoptions(threshold=np.inf)
 force_array = np.append(force_array, normalization*F)
 time = np.append(time, t)
 with open("force.txt", "w") as f:
-  f.write(str(force_array) + "\n" + str(time))
+#   f.write(str(force_array) + "\n" + str(time))
+    f.write(str(np.array([force_array,time]).T))
 
 s = 'Time t = ' + repr(t)
 print(s)
