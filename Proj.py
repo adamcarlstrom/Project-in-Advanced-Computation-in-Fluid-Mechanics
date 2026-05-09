@@ -29,6 +29,10 @@ from dolfin import *
 from mshr import *
 import dolfin.common.plotting as fenicsplot
 from matplotlib import pyplot as plt
+import logging
+
+logging.getLogger('FEniCS').setLevel(logging.WARNING)
+set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
 # Define rectangular domain
 L = 8
@@ -234,8 +238,8 @@ um = 0.5*(u + u0)
 um1 = 0.5*(u1 + u0)
 
 # Momentum variational equation on residual form
-Fu = inner((u - u0)/dt + grad(um)*(um1-w/dt), v)*dx - p1*div(v)*dx + nu*inner(grad(um), grad(v))*dx \
-    + d1*inner((u - u0)/dt + grad(um)*(um1-w/dt) + grad(p1), grad(v)*(um1-w/dt))*dx + d2*div(um)*div(v)*dx
+Fu = inner((u - u0)/dt + grad(um)*(um1-w), v)*dx - p1*div(v)*dx + nu*inner(grad(um), grad(v))*dx \
+    + d1*inner((u - u0)/dt + grad(um)*(um1-w) + grad(p1), grad(v)*(um1-w))*dx + d2*div(um)*div(v)*dx
 au = lhs(Fu)
 Lu = rhs(Fu)
 
@@ -261,7 +265,8 @@ bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects)
 bc_psi_x.apply(psi.vector())
 bc_psi_y.apply(psi.vector())
 
-Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
+# Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
+Force = inner((u1 - u0)/dt + grad(um1)*(um1-w),psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1),grad(psi))*dx
 
 #plt.figure()
 #plot(psi, title="weight function psi")
@@ -344,7 +349,7 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     # if distance_since_remesh_arg > 0.5:
     if(min_q < 0.15): # If the mesh quality degrades too much, trigger remesh
         mesh_Change = True
-        print("Mesh quality degrading. Triggering Remesh and Interpolation...\n Min radius ratio: " + str(min_q) + " Max radius ratio: " + str(max_q))
+        print("########################################## Mesh quality degrading. Triggering Remesh and Interpolation... #########################################\n Min radius ratio: " + str(min_q) + " Max radius ratio: " + str(max_q))
 
         # Build the pristine new mesh at the current location
         mesh = build_mesh(current_xc_arg, current_yc_arg)
@@ -426,7 +431,7 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
         bc_psi_x.apply(psi.vector())
         bc_psi_y.apply(psi.vector())
 
-        Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
+        Force = inner((u1 - u0)/dt + grad(um1)*(um1-w),psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1),grad(psi))*dx
 
         del Fu, Fp, um, um1, psi
         gc.collect()
@@ -434,20 +439,23 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     return mesh_Change
 
 # Time stepping
-T = 5
+T = 7
 t = dt
 current_xc = xc
 current_yc = yc
 countDown = 0
 last_mesh_change_time = 0
-last_good_force = 0.0 
+prev_calculated_force = 0.0
+last_good_force = 0.0
+ema_force = 0.0
+remesh_duration = 70
+ema_alpha = 0.15
 
 while t < T + DOLFIN_EPS:
 
     #s = 'Time t = ' + repr(t)
     #print(s)
 
-    w.t = t
     current_xc, current_yc = move_mesh(mesh,current_xc,current_yc)
 
     mesh_Change = remesh(current_xc,current_yc, u0, p0, u1, p1)
@@ -477,47 +485,57 @@ while t < T + DOLFIN_EPS:
         
 
         k += 1
-    remesh_duration = 20
+
     if mesh_Change:
         last_mesh_change_time = t
         countDown = remesh_duration
         # Save the pure, uncorrupted force from BEFORE the remesh
         if len(force_array) > 0:
             last_good_force = force_array[-1]
-            print(f"I am in hrer {last_good_force}")
+        ema_force = last_good_force
 
-    # Compute raw force
+    # 1. Get raw force
     F = assemble(Force)
     calculated_force = normalization * F
-    
+
+    # 2. Kill the zigzag oscillation (Two-step average)
+    if t <= dt + DOLFIN_EPS:  # Catch the very first timestep safely
+        prev_calculated_force = calculated_force
+        
+    stabilized_force = 0.5 * (calculated_force + prev_calculated_force)
+    prev_calculated_force = calculated_force  # Store for the NEXT loop iteration
+
+    # 3. Smoothing Logic
     if (t > start_sample_time):
         if countDown > 0:
-            print(f"Remesh Recovery in progress... Countdown: {countDown}")
             # We are inside the remesh recovery window
+            print(f"Remesh Recovery in progress at time {t:.2f}... Countdown: {countDown}")
             
-            if countDown > (remesh_duration / 2):
+            # Always warm up the EMA silently in the background
+            ema_force = (1 - ema_alpha) * ema_force + ema_alpha * stabilized_force
+            
+            # Calculate exactly how many steps each phase gets
+            hold_duration = remesh_duration * 2 // 3   # 20 steps (if duration is 30)
+            trans_duration = remesh_duration - hold_duration # 10 steps
+            
+            if countDown > trans_duration:
                 # PHASE 1: THE HOLD
                 # The pressure solver is exploding right now. Ignore it completely.
-                # Just hold the last known good aerodynamic force.
                 smoothed_force = last_good_force
-                print(f"HOLDING last good force: {last_good_force}")
             else:
                 # PHASE 2: THE TRANSITION
-                # The solver has settled. Smoothly ramp from the old force to the new force.
-                # Calculate how far along we are in the second half of the countdown (0.0 to 1.0)
-                half_duration = remesh_duration / 2.0
-                progress = (half_duration - countDown) / half_duration 
+                # countDown is now moving from trans_duration (e.g., 10) down to 1
+                t_blend = (trans_duration - countDown) / trans_duration 
+                progress = 3 * (t_blend**2) - 2 * (t_blend**3) # Smooth-step curve
                 
-                # Linearly blend the old reality with the new reality
-                smoothed_force = (1.0 - progress) * last_good_force + (progress) * calculated_force
-                print(f"TRANSITIONING from last good force {last_good_force} to new calculated force {calculated_force}. Progress: {progress:.2f}, Smoothed Force: {smoothed_force}")
-            
+                # Smoothly ramp from the old reality to the warmed-up EMA
+                smoothed_force = (1.0 - progress) * last_good_force + progress * ema_force
+                
             countDown -= 1
         else:
-            # Normal operation
-            smoothed_force = calculated_force
+            # Normal operation: Output the stabilized (de-zigzagged) force
+            smoothed_force = stabilized_force
             
-        # Append the cleaned data
         force_array = np.append(force_array, smoothed_force)
         time = np.append(time, t)
         
