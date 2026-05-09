@@ -91,7 +91,7 @@ def build_mesh(xc,yc,resolution = resolution):
   mesh = generate_mesh(domain, resolution)
 
   # Local mesh refinement (specified by a cell marker)
-  no_levels = 1 
+  no_levels = 0 
   buffer = 0.25
   for i in range(0,no_levels):
     cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
@@ -448,8 +448,17 @@ last_mesh_change_time = 0
 prev_calculated_force = 0.0
 last_good_force = 0.0
 ema_force = 0.0
-remesh_duration = 70
-ema_alpha = 0.15
+# remesh_duration = 70
+ema_alpha = 0.10
+t_remesh_start = 0.0
+remesh_gap_steps = 40
+gap_counter = 0
+in_recovery = False
+stability_streak = 0
+required_stability_streak = 5
+tolerance_for_stability = 0.05
+recovery_buffer_force = []
+recovery_buffer_time = []
 
 while t < T + DOLFIN_EPS:
 
@@ -487,59 +496,79 @@ while t < T + DOLFIN_EPS:
         k += 1
 
     if mesh_Change:
+        in_recovery = True
         last_mesh_change_time = t
-        countDown = remesh_duration
-        # Save the pure, uncorrupted force from BEFORE the remesh
+        gap_counter = remesh_gap_steps
+        t_remesh_start = t
+        stability_streak = 0
+        gap_counter = 0
+        recovery_buffer_force = []
+        recovery_buffer_time = []
         if len(force_array) > 0:
             last_good_force = force_array[-1]
         ema_force = last_good_force
 
-    # 1. Get raw force
     F = assemble(Force)
     calculated_force = normalization * F
 
-    # 2. Kill the zigzag oscillation (Two-step average)
+    #Kill the zigzag oscillation (Two-step average)
     if t <= dt + DOLFIN_EPS:  # Catch the very first timestep safely
         prev_calculated_force = calculated_force
         
     stabilized_force = 0.5 * (calculated_force + prev_calculated_force)
-    prev_calculated_force = calculated_force  # Store for the NEXT loop iteration
+    prev_calculated_force = calculated_force
 
-    # 3. Smoothing Logic
+    # Smoothing Logic
     if (t > start_sample_time):
-        if countDown > 0:
-            # We are inside the remesh recovery window
-            print(f"Remesh Recovery in progress at time {t:.2f}... Countdown: {countDown}")
+        if in_recovery:
+            # STATE: SHOCKWAVE RECOVERY
+            # Buffer live values during recovery (don't write to main arrays yet)
+            recovery_buffer_force.append(stabilized_force)
+            recovery_buffer_time.append(t)
+
+            gap_counter += 1
             
-            # Always warm up the EMA silently in the background
             ema_force = (1 - ema_alpha) * ema_force + ema_alpha * stabilized_force
             
-            # Calculate exactly how many steps each phase gets
-            hold_duration = remesh_duration * 2 // 3   # 20 steps (if duration is 30)
-            trans_duration = remesh_duration - hold_duration # 10 steps
-            
-            if countDown > trans_duration:
-                # PHASE 1: THE HOLD
-                # The pressure solver is exploding right now. Ignore it completely.
-                smoothed_force = last_good_force
+            if abs(ema_force) > 1e-10:
+                relative_error = abs((stabilized_force - ema_force) / ema_force)
             else:
-                # PHASE 2: THE TRANSITION
-                # countDown is now moving from trans_duration (e.g., 10) down to 1
-                t_blend = (trans_duration - countDown) / trans_duration 
-                progress = 3 * (t_blend**2) - 2 * (t_blend**3) # Smooth-step curve
+                relative_error = 1.0
                 
-                # Smoothly ramp from the old reality to the warmed-up EMA
-                smoothed_force = (1.0 - progress) * last_good_force + progress * ema_force
+            if relative_error < tolerance_for_stability:
+                stability_streak += 1
+            else:
+                stability_streak = 0
+
+            if stability_streak >= required_stability_streak or gap_counter > 150:
+                print(f"Solver stabilized after {gap_counter} steps. Backfilling Hermite curve...")
                 
-            countDown -= 1
+                n_steps = len(recovery_buffer_time)
+                hermite_forces = []
+                hermite_times = []
+
+                for i in range(1, n_steps + 1):
+                    progress = i / float(n_steps)
+                    h_weight = 3*(progress**2) - 2*(progress**3)
+                    artificial_force = (1.0 - h_weight) * last_good_force + h_weight * ema_force
+                    hermite_forces.append(artificial_force)
+                    hermite_times.append(recovery_buffer_time[i - 1])  # reuse same timestamps
+
+                # Write Hermite curve in chronological order, then clear buffer
+                force_array = np.append(force_array, hermite_forces)
+                time       = np.append(time, hermite_times)
+
+                # Clear the buffer and exit recovery
+                recovery_buffer_force = []
+                recovery_buffer_time = []
+                in_recovery = False
+                
         else:
-            # Normal operation: Output the stabilized (de-zigzagged) force
-            smoothed_force = stabilized_force
-            
-        force_array = np.append(force_array, smoothed_force)
-        time = np.append(time, t)
+            # STATE: NORMAL OPERATION
+            force_array = np.append(force_array, stabilized_force)
+            time = np.append(time, t)
         
-    if t > plot_time or mesh_Change:
+    if t > plot_time or mesh_Change and not in_recovery:
         s = 'Time t = ' + repr(t)
         print(s)
 
