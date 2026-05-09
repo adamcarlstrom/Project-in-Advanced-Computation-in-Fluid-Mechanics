@@ -1,3 +1,7 @@
+# Based on the FEniCS Navier-Stokes ALE file by Johan Hoffman (
+# KTH DD2365 Advanced Computation in Fluid Mechanics ) 
+# Further enhanced by author Adam Carlström (adacar@ug.kth.se) 2026
+
 """This program is an example file for the course"""
 """DD2365 Advanced Computation in Fluid Mechanics, """
 """KTH Royal Institute of Technology, Stockholm, Sweden."""
@@ -201,12 +205,11 @@ p1 = Function(Q)
 # Define mesh deformation, mesh velocity = w/dt
 freq = 0.1
 t = 0.0
-amp_x = 1.0e-2 # Move in x-direction
-amp_y = 0.0
-w = Expression(("amp_x*sin(2.0*pi*t*freq)*sin(pi*x[0]/L)","amp_y*sin(2.0*pi*t*freq-0.5*pi)*sin(pi*x[1]/H)"), L=L, H=H, t=t, amp_x=amp_x, amp_y=amp_y, freq=freq, element = V.ufl_element())
+# amp_x = 1.0e-2 # Move in x-direction
+# amp_y = 0.0
+# w = Expression(("amp_x*sin(2.0*pi*t*freq)*sin(pi*x[0]/L)","amp_y*sin(2.0*pi*t*freq-0.5*pi)*sin(pi*x[1]/H)"), L=L, H=H, t=t, amp_x=amp_x, amp_y=amp_y, freq=freq, element = V.ufl_element())
 
-
-# w = mesh_disp / dt
+w = Function(V) # for global mesh deformation
 
 # Set parameters for nonlinear and lienar solvers
 num_nnlin_iter = 5
@@ -237,7 +240,7 @@ au = lhs(Fu)
 Lu = rhs(Fu)
 
 # Continuity variational equation on residual form
-Fp = d1*inner((u1 - u0)/dt + grad(um1)*(um1-w/dt) + grad(p), grad(q))*dx + div(um1)*q*dx
+Fp = d1*inner((u1 - u0)/dt + grad(um1)*(um1-w) + grad(p), grad(q))*dx + div(um1)*q*dx
 ap = lhs(Fp)
 Lp = rhs(Fp)
 
@@ -284,34 +287,51 @@ time = np.delete(time, 0)
 start_sample_time = 1.0
 
 def move_mesh(mesh, current_xc, current_yc):
-  # Create a Vector space for the mesh displacement
-  V_mesh = VectorFunctionSpace(mesh, "Lagrange", 1)
+    global w, V  # Bring in the global mesh velocity variable
 
-  # Define Boundary Conditions for the MESH
-  # The outer walls of the channel do not move
-  dbc_walls = DirichletBoundaryOuter()
-  bc_walls = DirichletBC(V_mesh, Constant((0.0, 0.0)), dbc_walls)
+    V_mesh = VectorFunctionSpace(mesh, "Lagrange", 1)
+
+    # 1. Define Local Boundary Condition: Fix mesh everywhere outside R_out
+    class OuterMeshBoundary(SubDomain):
+        def __init__(self, xc, yc, r_out):
+            self.xc = xc
+            self.yc = yc
+            self.r_out = r_out
+            SubDomain.__init__(self)
+            
+        def inside(self, x, on_boundary):
+            # True if the point is outside the radius R_out
+            return ((x[0] - self.xc)**2 + (x[1] - self.yc)**2) >= (self.r_out**2 - DOLFIN_EPS)
+
+    outer_boundary = OuterMeshBoundary(current_xc, current_yc, R_out)
     
-  # The cylinder boundary moves by the cylinder velocity * dt
-  bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
+    # Use method="pointwise" to apply this to all internal nodes outside the radius
+    bc_outer = DirichletBC(V_mesh, Constant((0.0, 0.0)), outer_boundary, method="pointwise")
 
-  # Solve the Laplace equation for smooth mesh displacement (u_mesh)
-  u_mesh = TrialFunction(V_mesh)
-  v_mesh = TestFunction(V_mesh)
-  mesh_disp = Function(V_mesh)
+    # 2. The train boundary moves by the physical step distance (velocity * dt)
+    bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
 
-  a_mesh = inner(grad(u_mesh), grad(v_mesh))*dx
-  L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx # zero source term
+    # 3. Solve the Laplace equation for smooth mesh displacement (u_mesh)
+    u_mesh = TrialFunction(V_mesh)
+    v_mesh = TestFunction(V_mesh)
+    mesh_disp = Function(V_mesh)
 
-  solve(a_mesh == L_mesh, mesh_disp, [bc_walls, bc_cyl])
+    a_mesh = inner(grad(u_mesh), grad(v_mesh))*dx
+    L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx # zero source term
 
-  # Physically move the mesh nodes
-  ALE.move(mesh, mesh_disp)
+    solve(a_mesh == L_mesh, mesh_disp, [bc_outer, bc_cyl])
 
-  # Update cylinder coordinates for the next step
-  current_xc += vx * dt
-  current_yc += vy * dt
-  return current_xc, current_yc
+    # 4. Calculate Mesh Velocity (w = u_mesh / dt) safely and project to fluid space
+    # (Using Jacobi preconditioner to prevent Mass Matrix crashes)
+    w.assign(project(mesh_disp / dt, V, solver_type="cg", preconditioner_type="jacobi"))
+
+    # 5. Physically move the mesh nodes
+    ALE.move(mesh, mesh_disp)
+
+    # Update cylinder coordinates for the next step
+    current_xc += vx * dt
+    current_yc += vy * dt
+    return current_xc, current_yc
 
 def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force, bcu, bcp, ds, u0, p0, u1, p1, dx, w
@@ -349,6 +369,7 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
         # Re-initialize other Functions on the new mesh
         u1 = Function(V)
         p1 = Function(Q)
+        w = Function(V)
 
         # Rebuilding Boundaries
         # Rebuilding Boundaries for open walls
@@ -389,12 +410,12 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
         um = 0.5*(u + u0)
         um1 = 0.5*(u1 + u0)
 
-        Fu = inner((u - u0)/dt + grad(um)*(um1-w/dt), v)*dx - p1*div(v)*dx + nu*inner(grad(um), grad(v))*dx \
-             + d1_recalc*inner((u - u0)/dt + grad(um)*(um1-w/dt) + grad(p1), grad(v)*(um1-w/dt))*dx + d2_recalc*div(um)*div(v)*dx
+        Fu = inner((u - u0)/dt + grad(um)*(um1-w), v)*dx - p1*div(v)*dx + nu*inner(grad(um), grad(v))*dx \
+             + d1_recalc*inner((u - u0)/dt + grad(um)*(um1-w) + grad(p1), grad(v)*(um1-w))*dx + d2_recalc*div(um)*div(v)*dx
         au = lhs(Fu)
         Lu = rhs(Fu)
 
-        Fp = d1_recalc*inner((u1 - u0)/dt + grad(um1)*(um1-w/dt) + grad(p), grad(q))*dx + div(um1)*q*dx
+        Fp = d1_recalc*inner((u1 - u0)/dt + grad(um1)*(um1-w) + grad(p), grad(q))*dx + div(um1)*q*dx
         ap = lhs(Fp)
         Lp = rhs(Fp)
 
