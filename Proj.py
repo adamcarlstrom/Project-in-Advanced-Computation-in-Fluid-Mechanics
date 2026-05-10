@@ -46,6 +46,7 @@ H = 4
 # Train dimensions
 xc = 2.0
 yc = 0.75*H
+yc2 = H - yc
 t_L = 2.0
 t_H = 0.2
 t_R = t_H/2.0
@@ -73,25 +74,26 @@ lower = Lower()
 upper = Upper()
 
 # Generate mesh (examples with and without a hole in the mesh)
-resolution = 32
+resolution = 64
 #mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
-def build_mesh(xc,yc,resolution = resolution):
+def build_mesh(xc_top,xc_bot):
+  global yc,yc2,t_L,t_H,t_R,L,H,resolution
 #   mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
   
-  p1 = Point(xc - t_L/2.0, yc - t_H/2.0)
-  p2 = Point(xc + t_L/2.0, yc + t_H/2.0)
+  p1 = Point(xc_top - t_L/2.0, yc - t_H/2.0)
+  p2 = Point(xc_top + t_L/2.0, yc + t_H/2.0)
   body = Rectangle(p1, p2)
   
-  head_center = Point(xc + t_L/2.0, yc)
+  head_center = Point(xc_top + t_L/2.0, yc)
   head = Circle(head_center, t_R)
   
   train = body + head
   
-  p1 = Point(L - xc - t_L/2.0, H- yc - t_H/2.0)
-  p2 = Point(L - xc + t_L/2.0, H - yc + t_H/2.0)
+  p1 = Point(xc_bot - t_L/2.0, yc2 - t_H/2.0)
+  p2 = Point(xc_bot + t_L/2.0, yc2 + t_H/2.0)
   body = Rectangle(p1, p2)
   
-  head_center = Point(L - xc - t_L/2.0, H - yc)
+  head_center = Point(xc_bot - t_L/2.0, yc2)
   head = Circle(head_center, t_R)
   
   train2 = body + head
@@ -116,7 +118,7 @@ def build_mesh(xc,yc,resolution = resolution):
 
   return mesh
 
-mesh = build_mesh(xc,yc,resolution)
+mesh = build_mesh(xc,L-xc)
 
 # Define mesh functions (for boundary conditions)
 boundaries = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
@@ -174,18 +176,37 @@ class DirichletBoundaryObjects(SubDomain):
     def inside(self, x, on_boundary):
         return on_boundary and (not near(x[0], 0.0)) and (not near(x[0], L)) and (not near(x[1], 0.0)) and (not near(x[1], H))
 
+y_mid = 0.5 * (yc + yc2)   # = 0.5 * (3.0 + 1.0) = 2.0  — stable, never changes
+
+class DirichletBoundaryTopTrain(SubDomain):
+    def inside(self, x, on_boundary):
+        return (on_boundary
+                and not near(x[0], 0.0) and not near(x[0], L)
+                and not near(x[1], 0.0) and not near(x[1], H)
+                and x[1] > y_mid)
+
+class DirichletBoundaryBotTrain(SubDomain):
+    def inside(self, x, on_boundary):
+        return (on_boundary
+                and not near(x[0], 0.0) and not near(x[0], L)
+                and not near(x[1], 0.0) and not near(x[1], H)
+                and x[1] < y_mid)
+
+dbc_objects_top = DirichletBoundaryTopTrain()
+dbc_objects_bot = DirichletBoundaryBotTrain()
+
 dbc_lower = DirichletBoundaryLower()
 dbc_upper = DirichletBoundaryUpper()
 dbc_left = DirichletBoundaryLeft()
 dbc_right = DirichletBoundaryRight()
 dbc_objects = DirichletBoundaryObjects()
 
-# The object (cylinder) pushes the fluid
-bcu_obj0 = DirichletBC(V.sub(0), vx, dbc_objects)
-bcu_obj1 = DirichletBC(V.sub(1), vy, dbc_objects)
-
-# Velocity BC list only contains the moving object
-bcu = [bcu_obj0, bcu_obj1]
+# The train pushes the fluid
+bcu_top0 = DirichletBC(V.sub(0),  vx, dbc_objects_top)
+bcu_top1 = DirichletBC(V.sub(1), 0.0, dbc_objects_top)
+bcu_bot0 = DirichletBC(V.sub(0), -vx, dbc_objects_bot)
+bcu_bot1 = DirichletBC(V.sub(1), 0.0, dbc_objects_bot)
+bcu = [bcu_top0, bcu_top1, bcu_bot0, bcu_bot1]
 
 # Create a subdomain for ALL outer walls to apply pressure
 class DirichletBoundaryOuter(SubDomain):
@@ -268,8 +289,8 @@ phi_y = 0.0 # lift
 psi = Function(V)
 
 # Apply a value of 1.0 (phi_x) in the x-direction directly to the nodes on the train boundary
-bc_psi_x = DirichletBC(V.sub(0), Constant(phi_x), dbc_objects)
-bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects)
+bc_psi_x = DirichletBC(V.sub(0), Constant(phi_x), dbc_objects_top)
+bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects_top)
 
 # Apply these boundary conditions to our empty psi vector. 
 # This automatically makes psi = 1 on the train boundary and 0 everywhere else!
@@ -278,6 +299,7 @@ bc_psi_y.apply(psi.vector())
 
 # Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
 Force = inner((u1 - u0)/dt + grad(um1)*(um1-w),psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1),grad(psi))*dx
+
 
 #plt.figure()
 #plot(psi, title="weight function psi")
@@ -302,178 +324,151 @@ time = np.array(0.0)
 time = np.delete(time, 0)
 start_sample_time = 1.0
 
-def move_mesh(mesh, current_xc, current_yc):
-    global w, V  # Bring in the global mesh velocity variable
+def move_mesh(mesh, current_xc_top, current_xc_bot):
+    global w, V
+
+    pad_x = 0.8
+    pad_y = 0.4
+    half_L = t_L / 2.0 + t_R + pad_x
 
     V_mesh = VectorFunctionSpace(mesh, "Lagrange", 1)
 
-    # 1. Define Local Boundary Condition: Fix mesh everywhere outside R_out
     class OuterMeshBoundary(SubDomain):
-        def __init__(self, xc, yc, r_out):
-            self.xc = xc
-            self.yc = yc
-            self.r_out = r_out
-            SubDomain.__init__(self)
-            
         def inside(self, x, on_boundary):
             if near(x[0], 0.0) or near(x[0], L) or near(x[1], 0.0) or near(x[1], H):
                 return True
-            
-            # True if the point is outside the radius R_out
-            return (1.0/8.0*(x[0] - self.xc)**2.0 + (x[1] - self.yc)**2.0) >= (self.r_out**2.0 - DOLFIN_EPS)
+            x_min = min(current_xc_top, current_xc_bot) - half_L
+            x_max = max(current_xc_top, current_xc_bot) + half_L
+            if x[0] < x_min or x[0] > x_max:
+                return True
 
-    outer_boundary = OuterMeshBoundary(current_xc, current_yc, R_out)
-    
-    # Use method="pointwise" to apply this to all internal nodes outside the radius
-    bc_outer = DirichletBC(V_mesh, Constant((0.0, 0.0)), outer_boundary, method="pointwise")
+            # Freeze outside y-extent of both train zones
+            # Below bottom train
+            if x[1] < yc2 - t_H/2.0 - pad_y:
+                return True
+            # Above top train
+            if x[1] > yc + t_H/2.0 + pad_y:
+                return True
 
-    # 2. The train boundary moves by the physical step distance (velocity * dt)
-    bc_cyl = DirichletBC(V_mesh, Constant((vx * dt, vy * dt)), dbc_objects) 
+            return False
 
-    # 3. Solve the Laplace equation for smooth mesh displacement (u_mesh)
-    u_mesh = TrialFunction(V_mesh)
-    v_mesh = TestFunction(V_mesh)
+    outer_boundary = OuterMeshBoundary()
+    bc_outer   = DirichletBC(V_mesh, Constant((0.0, 0.0)),   outer_boundary,  method="pointwise")
+    bc_top     = DirichletBC(V_mesh, Constant(( vx*dt, 0.0)), dbc_objects_top)
+    bc_bot     = DirichletBC(V_mesh, Constant((-vx*dt, 0.0)), dbc_objects_bot)
+
+    u_mesh    = TrialFunction(V_mesh)
+    v_mesh    = TestFunction(V_mesh)
     mesh_disp = Function(V_mesh)
 
-    a_mesh = inner(grad(u_mesh), grad(v_mesh))*dx
-    L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx # zero source term
+    a_mesh = inner(grad(u_mesh), grad(v_mesh)) * dx
+    L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx
 
-    solve(a_mesh == L_mesh, mesh_disp, [bc_outer, bc_cyl])
-    
-    max_disp = mesh_disp.vector().norm("linf")
-    expected_max = sqrt(vx**2 + vy**2) * dt * 2.0  # allow 2x headroom
-    if max_disp > expected_max:
-        print(f"WARNING: mesh displacement norm {max_disp:.3e} exceeds expected {expected_max:.3e}. Skipping ALE move this step.")
-        w.assign(project(Constant((0.0, 0.0)), V, solver_type="cg", preconditioner_type="jacobi"))
-        current_xc += vx * dt
-        current_yc += vy * dt
-        return current_xc, current_yc, True
-    
-    # 4. Calculate Mesh Velocity (w = u_mesh / dt) safely and project to fluid space
-    # (Using Jacobi preconditioner to prevent Mass Matrix crashes)
+    solve(a_mesh == L_mesh, mesh_disp, [bc_outer, bc_top, bc_bot])
+
     w.assign(project(mesh_disp / dt, V, solver_type="cg", preconditioner_type="jacobi"))
-
-    # 5. Physically move the mesh nodes
     ALE.move(mesh, mesh_disp)
 
-    # Update cylinder coordinates for the next step
-    current_xc += vx * dt
-    current_yc += vy * dt
-    return current_xc, current_yc, False
+    return current_xc_top + vx*dt, current_xc_bot - vx*dt
 
-def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func, force_remesh):
+def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
     global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force, bcu, bcp, ds, u0, p0, u1, p1, dx, w
+    global dbc_objects_top, dbc_objects_bot
 
     mesh_Change = False
-
-    # If the cylinder has moved enough, trigger remesh
     min_q, max_q = MeshQuality.radius_ratio_min_max(mesh)
-    
-    # if distance_since_remesh_arg > 0.5:
-    if(min_q < 0.2) or force_remesh: # If the mesh quality degrades too much, trigger remesh
+
+    if min_q < 0.2:
         mesh_Change = True
-        print("########################################## Mesh quality degrading. Triggering Remesh and Interpolation... #########################################\n Min radius ratio: " + str(min_q) + " Max radius ratio: " + str(max_q))
+        print(f"Remeshing... min radius ratio: {min_q:.4f}")
 
-        # Build the pristine new mesh at the current location
-        mesh = build_mesh(current_xc_arg, current_yc_arg)
-
-        # Re-define dx for the new mesh
+        # Correct call — all four positional args, resolution is keyword
+        mesh = build_mesh(current_xc_top, current_xc_bot)
         dx = Measure('dx', domain=mesh)
+        V  = VectorFunctionSpace(mesh, "Lagrange", 1)
+        Q  = FunctionSpace(mesh, "Lagrange", 1)
 
-        # Define Function Spaces on the new mesh
-        V = VectorFunctionSpace(mesh, "Lagrange", 1)
-        Q = FunctionSpace(mesh, "Lagrange", 1)
-
-        # Transfer the data safely using Interpolate
-        u0 = Function(V)
-        u0_func.set_allow_extrapolation(True)
-        u0.interpolate(u0_func)
-        # u0 = project(u0_func, V, solver_type="cg", preconditioner_type="amg")
-        p0 = Function(Q)
-        p0_func.set_allow_extrapolation(True)
-        p0.interpolate(p0_func)
-        # p0 = project(p0_func, Q, solver_type="cg", preconditioner_type="amg")
-
-        # Re-initialize other Functions on the new mesh
+        u0 = Function(V); u0_func.set_allow_extrapolation(True); u0.interpolate(u0_func)
+        p0 = Function(Q); p0_func.set_allow_extrapolation(True); p0.interpolate(p0_func)
         u1 = Function(V)
         p1 = Function(Q)
-        w = Function(V)
+        w  = Function(V)
 
-
-        # Rebuilding Boundaries
-        # Rebuilding Boundaries for open walls
-        bcu_obj0 = DirichletBC(V.sub(0), vx, dbc_objects)
-        bcu_obj1 = DirichletBC(V.sub(1), vy, dbc_objects)
         
-        # Only the cylinder has constrained velocity
-        bcu = [bcu_obj0, bcu_obj1]
+        class DirichletBoundaryTopTrain(SubDomain):
+            def inside(self, x, on_boundary):
+                return (on_boundary
+                        and not near(x[0], 0.0) and not near(x[0], L)
+                        and not near(x[1], 0.0) and not near(x[1], H)
+                        and x[1] > yc - t_H/2.0 - 0.1)  # robust: above train body
 
-        pout = 0.0
-        # Use string logic to catch all 4 outer walls on the new mesh
-        dbc_outer_remesh = DirichletBoundaryOuter()
-        bcp_outer = DirichletBC(Q, pout, dbc_outer_remesh)
-        bcp = [bcp_outer]
+        class DirichletBoundaryBotTrain(SubDomain):
+            def inside(self, x, on_boundary):
+                return (on_boundary
+                        and not near(x[0], 0.0) and not near(x[0], L)
+                        and not near(x[1], 0.0) and not near(x[1], H)
+                        and x[1] < yc2 + t_H/2.0 + 0.1)  # robust: below train body
+                
+        dbc_objects_top = DirichletBoundaryTopTrain()
+        dbc_objects_bot = DirichletBoundaryBotTrain()
+        
+        # Rebuild separate velocity BCs
+        bcu = [
+            DirichletBC(V.sub(0),  vx, dbc_objects_top),
+            DirichletBC(V.sub(1), 0.0, dbc_objects_top),
+            DirichletBC(V.sub(0), -vx, dbc_objects_bot),
+            DirichletBC(V.sub(1), 0.0, dbc_objects_bot),
+        ]
+        bcp = [DirichletBC(Q, 0.0, DirichletBoundaryOuter())]
 
         boundaries = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
         boundaries.set_all(0)
-
-        dbc_left.mark(boundaries, 1)
-        dbc_right.mark(boundaries, 2)
-        dbc_upper.mark(boundaries, 3)
-        dbc_lower.mark(boundaries, 4)
+        dbc_left.mark(boundaries, 1);  dbc_right.mark(boundaries, 2)
+        dbc_upper.mark(boundaries, 3); dbc_lower.mark(boundaries, 4)
         dbc_objects.mark(boundaries, 5)
-
         ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 
-        # Rebuild Navier-Stokes weak forms
-        u = TrialFunction(V)
-        p = TrialFunction(Q)
-        v = TestFunction(V)
-        q = TestFunction(Q)
+        u = TrialFunction(V); p = TrialFunction(Q)
+        v = TestFunction(V);  q = TestFunction(Q)
 
-        h = CellDiameter(mesh)
-        u_mag_recalc = sqrt(dot(u0,u0))
-        d1_recalc = 1.0/sqrt((pow(1.0/dt,2.0) + pow(u_mag_recalc/h,2.0)))
-        d2_recalc = h*u_mag_recalc
+        h            = CellDiameter(mesh)
+        u_mag_r      = sqrt(dot(u1, u1))
+        d1_recalc    = 1.0 / sqrt(pow(1.0/dt, 2.0) + pow(u_mag_r/h, 2.0))
+        d2_recalc    = h * u_mag_r
+        um           = 0.5*(u + u0)
+        um1          = 0.5*(u1 + u0)
 
-        um = 0.5*(u + u0)
-        um1 = 0.5*(u1 + u0)
+        Fu = (inner((u-u0)/dt + grad(um)*(um1-w), v)*dx
+              - p1*div(v)*dx
+              + nu*inner(grad(um), grad(v))*dx
+              + d1_recalc*inner((u-u0)/dt + grad(um)*(um1-w) + grad(p1), grad(v)*(um1-w))*dx
+              + d2_recalc*div(um)*div(v)*dx)
+        au = lhs(Fu); Lu = rhs(Fu)
 
-        Fu = inner((u - u0)/dt + grad(um)*(um1-w), v)*dx - p1*div(v)*dx + nu*inner(grad(um), grad(v))*dx \
-             + d1_recalc*inner((u - u0)/dt + grad(um)*(um1-w) + grad(p1), grad(v)*(um1-w))*dx + d2_recalc*div(um)*div(v)*dx
-        au = lhs(Fu)
-        Lu = rhs(Fu)
+        Fp = d1_recalc*inner((u1-u0)/dt + grad(um1)*(um1-w) + grad(p), grad(q))*dx + div(um1)*q*dx
+        ap = lhs(Fp); Lp = rhs(Fp)
 
-        Fp = d1_recalc*inner((u1 - u0)/dt + grad(um1)*(um1-w) + grad(p), grad(q))*dx + div(um1)*q*dx
-        ap = lhs(Fp)
-        Lp = rhs(Fp)
-
-        # Shape-independent psi reconstruction
         psi = Function(V)
-        bc_psi_x = DirichletBC(V.sub(0), Constant(phi_x), dbc_objects)
-        bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects)
-        bc_psi_x.apply(psi.vector())
-        bc_psi_y.apply(psi.vector())
+        DirichletBC(V.sub(0), Constant(phi_x), dbc_objects_top).apply(psi.vector())
+        DirichletBC(V.sub(1), Constant(phi_y), dbc_objects_top).apply(psi.vector())
 
-        Force = inner((u1 - u0)/dt + grad(um1)*(um1-w),psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1),grad(psi))*dx
+        Force = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi)*dx
+                 - p1*div(psi)*dx
+                 + nu*inner(grad(um1), grad(psi))*dx)
 
         del Fu, Fp, um, um1, psi
         gc.collect()
-        
+
     return mesh_Change
 
+
 # Time stepping
-# T = 45 # for 1 full pass of the train
-T = 2
+T = 35 # for 1 full pass of the train
 t = dt
-current_xc = xc
-current_yc = yc
-countDown = 0
 last_mesh_change_time = 0
 prev_calculated_force = 0.0
 last_good_force = 0.0
 ema_force = 0.0
-# remesh_duration = 70
 ema_alpha = 0.10
 t_remesh_start = 0.0
 remesh_gap_steps = 40
@@ -485,14 +480,17 @@ tolerance_for_stability = 0.05
 recovery_buffer_force = []
 recovery_buffer_time = []
 
+current_xc_top = xc
+current_xc_bot = L-xc
+
 while t < T + DOLFIN_EPS:
 
     #s = 'Time t = ' + repr(t)
     #print(s)
 
-    current_xc, current_yc, force_remesh = move_mesh(mesh,current_xc,current_yc)
+    current_xc_top,current_xc_bot = move_mesh(mesh,current_xc_top,current_xc_bot)
 
-    mesh_Change = remesh(current_xc,current_yc, u0, p0, u1, p1, force_remesh)
+    mesh_Change = remesh(current_xc_top,current_xc_bot, u0, p0, u1, p1)
 
     # Solve non-linear problem
     k = 0
