@@ -36,7 +36,7 @@ set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
 # Define rectangular domain
 L = 8
-H = 3
+H = 4
 
 # Circular dimensions
 # xc = 1.0
@@ -44,8 +44,8 @@ H = 3
 # rc = 0.2
 
 # Train dimensions
-xc = 1.5
-yc = 0.5*H
+xc = 2.0
+yc = 0.75*H
 t_L = 2.0
 t_H = 0.2
 t_R = t_H/2.0
@@ -87,7 +87,16 @@ def build_mesh(xc,yc,resolution = resolution):
   
   train = body + head
   
-  domain = Rectangle(Point(0.0, 0.0), Point(L, H)) - train
+  p1 = Point(L - xc - t_L/2.0, H- yc - t_H/2.0)
+  p2 = Point(L - xc + t_L/2.0, H - yc + t_H/2.0)
+  body = Rectangle(p1, p2)
+  
+  head_center = Point(L - xc - t_L/2.0, H - yc)
+  head = Circle(head_center, t_R)
+  
+  train2 = body + head
+  
+  domain = Rectangle(Point(0.0, 0.0), Point(L, H)) - train - train2
   mesh = generate_mesh(domain, resolution)
 
   # Local mesh refinement (specified by a cell marker)
@@ -195,7 +204,9 @@ ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 dx = Measure('dx', domain=mesh)
 
 # Set viscosity
-nu = 1.0e-5
+nu = 8.0e-5
+
+# Re = U*D/nu = 0.1*0.4/8e-6 = 500
 
 
 # Define iteration functions
@@ -305,8 +316,11 @@ def move_mesh(mesh, current_xc, current_yc):
             SubDomain.__init__(self)
             
         def inside(self, x, on_boundary):
+            if near(x[0], 0.0) or near(x[0], L) or near(x[1], 0.0) or near(x[1], H):
+                return True
+            
             # True if the point is outside the radius R_out
-            return ((x[0] - self.xc)**2 + (x[1] - self.yc)**2) >= (self.r_out**2 - DOLFIN_EPS)
+            return (1.0/8.0*(x[0] - self.xc)**2.0 + (x[1] - self.yc)**2.0) >= (self.r_out**2.0 - DOLFIN_EPS)
 
     outer_boundary = OuterMeshBoundary(current_xc, current_yc, R_out)
     
@@ -325,7 +339,16 @@ def move_mesh(mesh, current_xc, current_yc):
     L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx # zero source term
 
     solve(a_mesh == L_mesh, mesh_disp, [bc_outer, bc_cyl])
-
+    
+    max_disp = mesh_disp.vector().norm("linf")
+    expected_max = sqrt(vx**2 + vy**2) * dt * 2.0  # allow 2x headroom
+    if max_disp > expected_max:
+        print(f"WARNING: mesh displacement norm {max_disp:.3e} exceeds expected {expected_max:.3e}. Skipping ALE move this step.")
+        w.assign(project(Constant((0.0, 0.0)), V, solver_type="cg", preconditioner_type="jacobi"))
+        current_xc += vx * dt
+        current_yc += vy * dt
+        return current_xc, current_yc, True
+    
     # 4. Calculate Mesh Velocity (w = u_mesh / dt) safely and project to fluid space
     # (Using Jacobi preconditioner to prevent Mass Matrix crashes)
     w.assign(project(mesh_disp / dt, V, solver_type="cg", preconditioner_type="jacobi"))
@@ -336,9 +359,9 @@ def move_mesh(mesh, current_xc, current_yc):
     # Update cylinder coordinates for the next step
     current_xc += vx * dt
     current_yc += vy * dt
-    return current_xc, current_yc
+    return current_xc, current_yc, False
 
-def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
+def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func, force_remesh):
     global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force, bcu, bcp, ds, u0, p0, u1, p1, dx, w
 
     mesh_Change = False
@@ -347,7 +370,7 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     min_q, max_q = MeshQuality.radius_ratio_min_max(mesh)
     
     # if distance_since_remesh_arg > 0.5:
-    if(min_q < 0.15): # If the mesh quality degrades too much, trigger remesh
+    if(min_q < 0.2) or force_remesh: # If the mesh quality degrades too much, trigger remesh
         mesh_Change = True
         print("########################################## Mesh quality degrading. Triggering Remesh and Interpolation... #########################################\n Min radius ratio: " + str(min_q) + " Max radius ratio: " + str(max_q))
 
@@ -375,6 +398,7 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
         u1 = Function(V)
         p1 = Function(Q)
         w = Function(V)
+
 
         # Rebuilding Boundaries
         # Rebuilding Boundaries for open walls
@@ -439,7 +463,8 @@ def remesh(current_xc_arg, current_yc_arg, u0_func, p0_func, u1_func, p1_func):
     return mesh_Change
 
 # Time stepping
-T = 7
+# T = 45 # for 1 full pass of the train
+T = 2
 t = dt
 current_xc = xc
 current_yc = yc
@@ -465,9 +490,9 @@ while t < T + DOLFIN_EPS:
     #s = 'Time t = ' + repr(t)
     #print(s)
 
-    current_xc, current_yc = move_mesh(mesh,current_xc,current_yc)
+    current_xc, current_yc, force_remesh = move_mesh(mesh,current_xc,current_yc)
 
-    mesh_Change = remesh(current_xc,current_yc, u0, p0, u1, p1)
+    mesh_Change = remesh(current_xc,current_yc, u0, p0, u1, p1, force_remesh)
 
     # Solve non-linear problem
     k = 0
