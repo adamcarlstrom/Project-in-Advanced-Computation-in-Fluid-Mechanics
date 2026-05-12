@@ -34,6 +34,10 @@ import logging
 logging.getLogger('FEniCS').setLevel(logging.WARNING)
 set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
+# Set to true for train crossing scenario
+# Set to false for lone train scenario
+two_trains = True
+
 # Define rectangular domain
 L = 8
 H = 3
@@ -74,52 +78,51 @@ lower = Lower()
 upper = Upper()
 
 # Generate mesh (examples with and without a hole in the mesh)
-resolution = 64
+resolution = 32
 #mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
-def build_mesh(xc_top,xc_bot):
-  global yc,yc2,t_L,t_H,t_R,L,H,resolution
-#   mesh = generate_mesh(Rectangle(Point(0.0,0.0), Point(L,H)) - Circle(Point(xc,yc),rc), resolution)
-  
-  p1 = Point(xc_top - t_L/2.0, yc - t_H/2.0)
-  p2 = Point(xc_top + t_L/2.0, yc + t_H/2.0)
-  body = Rectangle(p1, p2)
-  
-  head_center = Point(xc_top + t_L/2.0, yc)
-  head = Circle(head_center, t_R)
-  
-  train = body + head
-  
-  p1 = Point(xc_bot - t_L/2.0, yc2 - t_H/2.0)
-  p2 = Point(xc_bot + t_L/2.0, yc2 + t_H/2.0)
-  body = Rectangle(p1, p2)
-  
-  head_center = Point(xc_bot - t_L/2.0, yc2)
-  head = Circle(head_center, t_R)
-  
-  train2 = body + head
-  
-  domain = Rectangle(Point(0.0, 0.0), Point(L, H)) - train - train2
-  mesh = generate_mesh(domain, resolution)
+def build_mesh(xc_top, xc_bot):
+    global yc, yc2, t_L, t_H, t_R, L, H, resolution, two_trains
 
-  # Local mesh refinement (specified by a cell marker)
-  no_levels = 0
-  buffer = 0.3
-  for i in range(0,no_levels):
-    cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
-    cell_marker.set_all(False)
-    for cell in cells(mesh):
-      p = cell.midpoint()
-      px,py = p[0],p[1]
-    #   if p.distance(Point(xc, yc)) < 0.5:
-      if    ((xc_top - t_L/2.0 - buffer*2) < px < (xc_top + t_L/2.0 + t_R + buffer) and 
-            (yc - t_H/2.0 - buffer) < py < (yc + t_H/2.0 + buffer)
-            or 
-            (xc_bot - t_L/2.0 - buffer*2) < px < (xc_bot + t_L/2.0 + t_R + buffer) and
-            (yc2 - t_H/2.0 - buffer) < py < (yc2 + t_H/2.0 + buffer)):
-          cell_marker[cell] = True
-    mesh = refine(mesh, cell_marker)
+    p1 = Point(xc_top - t_L/2.0, yc - t_H/2.0)
+    p2 = Point(xc_top + t_L/2.0, yc + t_H/2.0)
+    body = Rectangle(p1, p2)
+    head_center = Point(xc_top + t_L/2.0, yc)
+    head = Circle(head_center, t_R)
+    train = body + head
 
-  return mesh
+    if two_trains:
+        p1 = Point(xc_bot - t_L/2.0, yc2 - t_H/2.0)
+        p2 = Point(xc_bot + t_L/2.0, yc2 + t_H/2.0)
+        body2 = Rectangle(p1, p2)
+        head_center2 = Point(xc_bot - t_L/2.0, yc2)
+        head2 = Circle(head_center2, t_R)
+        train2 = body2 + head2
+        domain = Rectangle(Point(0.0, 0.0), Point(L, H)) - train - train2
+    else:
+        domain = Rectangle(Point(0.0, 0.0), Point(L, H)) - train
+
+    mesh = generate_mesh(domain, resolution)
+
+
+    # Local mesh refinement (specified by a cell marker)
+    no_levels = 0
+    buffer = 0.3
+    for i in range(0,no_levels):
+        cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
+        cell_marker.set_all(False)
+        for cell in cells(mesh):
+            p = cell.midpoint()
+            px,py = p[0],p[1]
+            #   if p.distance(Point(xc, yc)) < 0.5:
+            if    ((xc_top - t_L/2.0 - buffer*2) < px < (xc_top + t_L/2.0 + t_R + buffer) and 
+                    (yc - t_H/2.0 - buffer) < py < (yc + t_H/2.0 + buffer)
+                    or 
+                    (xc_bot - t_L/2.0 - buffer*2) < px < (xc_bot + t_L/2.0 + t_R + buffer) and
+                    (yc2 - t_H/2.0 - buffer) < py < (yc2 + t_H/2.0 + buffer)):
+                cell_marker[cell] = True
+        mesh = refine(mesh, cell_marker)
+
+    return mesh
 
 mesh = build_mesh(xc,L-xc)
 
@@ -209,7 +212,9 @@ bcu_top0 = DirichletBC(V.sub(0),  vx, dbc_objects_top)
 bcu_top1 = DirichletBC(V.sub(1), 0.0, dbc_objects_top)
 bcu_bot0 = DirichletBC(V.sub(0), -vx, dbc_objects_bot)
 bcu_bot1 = DirichletBC(V.sub(1), 0.0, dbc_objects_bot)
-bcu = [bcu_top0, bcu_top1, bcu_bot0, bcu_bot1]
+bcu = [bcu_top0, bcu_top1]
+if two_trains:
+    bcu += [bcu_bot0, bcu_bot1]
 
 # Create a subdomain for ALL outer walls to apply pressure
 class DirichletBoundaryOuter(SubDomain):
@@ -284,33 +289,22 @@ ap = lhs(Fp)
 Lp = rhs(Fp)
 
 
-# Define the direction of the force to be computed
-phi_x = 0.0 # drag
-phi_y = 1.0 # lift
-force_str = ""
-if(phi_x == 1.0):
-    force_str = "Drag"
-elif(phi_y == 1.0):
-    force_str = "Lift"
+# --- Drag (phi_x=1) ---
+psi_drag = Function(V)
+DirichletBC(V.sub(0), Constant(1.0), dbc_objects_top).apply(psi_drag.vector())
+DirichletBC(V.sub(1), Constant(0.0), dbc_objects_top).apply(psi_drag.vector())
+Force_drag = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi_drag)*dx
+              - p1*div(psi_drag)*dx
+              + nu*inner(grad(um1), grad(psi_drag))*dx)
 
-# Create an empty function space for psi
-psi = Function(V)
+# --- Lift (phi_y=1) ---
+psi_lift = Function(V)
+DirichletBC(V.sub(0), Constant(0.0), dbc_objects_top).apply(psi_lift.vector())
+DirichletBC(V.sub(1), Constant(1.0), dbc_objects_top).apply(psi_lift.vector())
+Force_lift = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi_lift)*dx
+              - p1*div(psi_lift)*dx
+              + nu*inner(grad(um1), grad(psi_lift))*dx)
 
-# Apply a value of 1.0 (phi_x) in the x-direction directly to the nodes on the train boundary
-bc_psi_x = DirichletBC(V.sub(0), Constant(phi_x), dbc_objects_top)
-bc_psi_y = DirichletBC(V.sub(1), Constant(phi_y), dbc_objects_top)
-
-# Apply these boundary conditions to our empty psi vector. 
-# This automatically makes psi = 1 on the train boundary and 0 everywhere else!
-bc_psi_x.apply(psi.vector())
-bc_psi_y.apply(psi.vector())
-
-# Force = inner((u1 - u0)/dt + grad(um1)*um1, psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1), grad(psi))*dx
-Force = inner((u1 - u0)/dt + grad(um1)*(um1-w),psi)*dx - p1*div(psi)*dx + nu*inner(grad(um1),grad(psi))*dx
-
-
-#plt.figure()
-#plot(psi, title="weight function psi")
 
 # Force normalization
 D = t_H
@@ -326,10 +320,9 @@ plot_time = 0
 plot_freq = 18
 
 # Force computation data
-force_array = np.array(0.0)
-force_array = np.delete(force_array, 0)
-time = np.array(0.0)
-time = np.delete(time, 0)
+drag_array = np.delete(np.array(0.0), 0)
+lift_array = np.delete(np.array(0.0), 0)
+time = np.delete(np.array(0.0), 0)
 start_sample_time = 1.0
 
 def move_mesh(mesh, current_xc_top, current_xc_bot):
@@ -364,6 +357,9 @@ def move_mesh(mesh, current_xc_top, current_xc_bot):
     bc_outer   = DirichletBC(V_mesh, Constant((0.0, 0.0)),   outer_boundary,  method="pointwise")
     bc_top     = DirichletBC(V_mesh, Constant(( vx*dt, 0.0)), dbc_objects_top)
     bc_bot     = DirichletBC(V_mesh, Constant((-vx*dt, 0.0)), dbc_objects_bot)
+    bcs_mesh = [bc_outer, bc_top]
+    if two_trains:
+        bcs_mesh += [bc_bot]
 
     u_mesh    = TrialFunction(V_mesh)
     v_mesh    = TestFunction(V_mesh)
@@ -372,7 +368,7 @@ def move_mesh(mesh, current_xc_top, current_xc_bot):
     a_mesh = inner(grad(u_mesh), grad(v_mesh)) * dx
     L_mesh = dot(Constant((0.0, 0.0)), v_mesh) * dx
 
-    solve(a_mesh == L_mesh, mesh_disp, [bc_outer, bc_top, bc_bot])
+    solve(a_mesh == L_mesh, mesh_disp, bcs_mesh)
 
     w.assign(project(mesh_disp / dt, V, solver_type="cg", preconditioner_type="jacobi"))
     ALE.move(mesh, mesh_disp)
@@ -380,7 +376,7 @@ def move_mesh(mesh, current_xc_top, current_xc_bot):
     return current_xc_top + vx*dt, current_xc_bot - vx*dt
 
 def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
-    global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force, bcu, bcp, ds, u0, p0, u1, p1, dx, w
+    global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force_drag, Force_lift, drag_array, lift_array, time, bcu, bcp, ds, u0, p0, u1, p1, dx, w
     global dbc_objects_top, dbc_objects_bot
 
     mesh_Change = False
@@ -424,9 +420,13 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
         bcu = [
             DirichletBC(V.sub(0),  vx, dbc_objects_top),
             DirichletBC(V.sub(1), 0.0, dbc_objects_top),
-            DirichletBC(V.sub(0), -vx, dbc_objects_bot),
-            DirichletBC(V.sub(1), 0.0, dbc_objects_bot),
+            
         ]
+        if two_trains:
+            bcu += [
+                DirichletBC(V.sub(0), -vx, dbc_objects_bot),
+                DirichletBC(V.sub(1), 0.0, dbc_objects_bot)
+            ]
         bcp = [DirichletBC(Q, 0.0, DirichletBoundaryOuter())]
 
         boundaries = MeshFunction("size_t", mesh, mesh.topology().dim() - 1)
@@ -456,15 +456,22 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
         Fp = d1_recalc*inner((u1-u0)/dt + grad(um1)*(um1-w) + grad(p), grad(q))*dx + div(um1)*q*dx
         ap = lhs(Fp); Lp = rhs(Fp)
 
-        psi = Function(V)
-        DirichletBC(V.sub(0), Constant(phi_x), dbc_objects_top).apply(psi.vector())
-        DirichletBC(V.sub(1), Constant(phi_y), dbc_objects_top).apply(psi.vector())
+        psi_drag = Function(V)
+        DirichletBC(V.sub(0), Constant(1.0), dbc_objects_top).apply(psi_drag.vector())
+        DirichletBC(V.sub(1), Constant(0.0), dbc_objects_top).apply(psi_drag.vector())
+        Force_drag = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi_drag)*dx
+                    - p1*div(psi_drag)*dx
+                    + nu*inner(grad(um1), grad(psi_drag))*dx)
 
-        Force = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi)*dx
-                 - p1*div(psi)*dx
-                 + nu*inner(grad(um1), grad(psi))*dx)
+        # --- Lift (phi_y=1) ---
+        psi_lift = Function(V)
+        DirichletBC(V.sub(0), Constant(0.0), dbc_objects_top).apply(psi_lift.vector())
+        DirichletBC(V.sub(1), Constant(1.0), dbc_objects_top).apply(psi_lift.vector())
+        Force_lift = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi_lift)*dx
+                    - p1*div(psi_lift)*dx
+                    + nu*inner(grad(um1), grad(psi_lift))*dx)
 
-        del Fu, Fp, um, um1, psi
+        del Fu, Fp, um, um1
         gc.collect()
 
     return mesh_Change
@@ -472,15 +479,16 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
 # Time stepping
 # T = 35 # for 1 full pass of the train
-T = 40
+T = 8
 t = dt
 last_mesh_change_time = 0
 prev_calculated_force = 0.0
-last_good_force = 0.0
+last_good_drag_force = 0.0
+last_good_lift_force = 0.0
 ema_force = 0.0
 ema_alpha = 0.10
 t_remesh_start = 0.0
-remesh_gap_steps = 50
+remesh_gap_steps = 60
 gap_counter = 0
 in_recovery = False
 stability_streak = 0
@@ -489,8 +497,10 @@ recovery_steps = 200
 # Goal is to have it stabilize after around 30 steps, any more than 50 is probably too long and indicates the need for parameter tuning
 required_stability_streak = 3 
 tolerance_for_stability = 0.05
-recovery_buffer_force = []
+recovery_buffer_dragforce = []
+recovery_buffer_liftforce = []
 recovery_buffer_time = []
+skip_force_recording = False
 
 current_xc_top = xc
 current_xc_bot = L-xc
@@ -537,60 +547,67 @@ while t < T + DOLFIN_EPS:
         t_remesh_start = t
         stability_streak = 0
         gap_counter = 0
-        recovery_buffer_force = []
+        recovery_buffer_dragforce = []
+        recovery_buffer_liftforce = []
         recovery_buffer_time = []
-        if len(force_array) > 0:
-            last_good_force = force_array[-1]
-        ema_force = last_good_force
+        if len(drag_array) > 0:
+            last_good_drag_force = drag_array[-1]
+            last_good_lift_force = lift_array[-1]
+            skip_force_recording = True
+    else:
+        skip_force_recording = False
 
-    F = assemble(Force)
-    calculated_force = normalization * F
-
-    #Kill the zigzag oscillation (Two-step average)
-    if t <= dt + DOLFIN_EPS:  # Catch the very first timestep safely
-        prev_calculated_force = calculated_force
-        
-    # stabilized_force = 0.5 * (calculated_force + prev_calculated_force)
-    stabilized_force=calculated_force
-    prev_calculated_force = calculated_force
+    F_drag = assemble(Force_drag)
+    F_lift = assemble(Force_lift)
+    calc_drag = normalization * F_drag
+    calc_lift = normalization * F_lift
 
     # Smoothing Logic
-    if (t > start_sample_time):
+    if (t > start_sample_time) and not skip_force_recording:
         if in_recovery:
             # STATE: SHOCKWAVE RECOVERY
             # Buffer live values during recovery (don't write to main arrays yet)
-            recovery_buffer_force.append(stabilized_force)
+            recovery_buffer_dragforce.append(calc_drag)
+            recovery_buffer_liftforce.append(calc_lift)
             recovery_buffer_time.append(t)
 
             gap_counter += 1
 
             if gap_counter >= remesh_gap_steps:
-                tail = recovery_buffer_force[-15:]
-                target_force = sorted(tail)[len(tail)//2]         
+                tail_drag = recovery_buffer_dragforce[-15:]
+                target_force_drag = sorted(tail_drag)[len(tail_drag)//2]  
+                tail_lift = recovery_buffer_liftforce[-15:]
+                target_force_lift = sorted(tail_lift)[len(tail_lift)//2]        
                 n_steps = len(recovery_buffer_time)
-                hermite_forces = []
+                hermite_forces_drag = []
+                hermite_forces_lift = []
                 hermite_times = []
 
                 for i in range(1, n_steps + 1):
                     progress = i / float(n_steps)
                     h_weight = 3*(progress**2) - 2*(progress**3)
-                    artificial_force = (1.0 - h_weight) * last_good_force + h_weight *target_force 
-                    hermite_forces.append(artificial_force)
+                    artificial_force_drag = (1.0 - h_weight) * last_good_drag_force + h_weight *target_force_drag
+                    artificial_force_lift = (1.0 - h_weight) * last_good_lift_force + h_weight *target_force_lift
+                    hermite_forces_drag.append(artificial_force_drag)
+                    hermite_forces_lift.append(artificial_force_lift)
                     hermite_times.append(recovery_buffer_time[i - 1])  # reuse same timestamps
 
                 # Write Hermite curve in chronological order, then clear buffer
-                force_array = np.append(force_array, hermite_forces)
+                drag_array = np.append(drag_array, hermite_forces_drag)
+                lift_array = np.append(lift_array, hermite_forces_lift)
                 time       = np.append(time, hermite_times)
 
                 # Clear the buffer and exit recovery
-                recovery_buffer_force = []
+                recovery_buffer_dragforce = []
+                recovery_buffer_liftforce = []
                 recovery_buffer_time = []
                 in_recovery = False
                 
         else:
-            # STATE: NORMAL OPERATION
-            force_array = np.append(force_array, stabilized_force)
+            drag_array = np.append(drag_array, calc_drag)
+            lift_array = np.append(lift_array, calc_lift)
             time = np.append(time, t)
+
         
     if (t > plot_time and not in_recovery) or (mesh_Change):
         s = 'Time t = ' + repr(t)
@@ -620,19 +637,21 @@ while t < T + DOLFIN_EPS:
 
         # plt.figure()
         plt.subplot(2, 2, 4)
-        plt.title(f"Force: {force_str}")
-        plt.plot(time, force_array)
+        plt.title(f"Force: (t = {t:.2f})")
+        plt.plot(time, drag_array, color='tab:blue',  label='Drag')
+        plt.plot(time, lift_array, color='tab:orange', label='Lift')
+        plt.legend()
 
     # Update time step
     u0.assign(u1)
     t += dt
 
-np.set_printoptions(threshold=np.inf)
-force_array = np.append(force_array, normalization*F)
-time = np.append(time, t)
-with open("force.txt", "w") as f:
-#   f.write(str(force_array) + "\n" + str(time))
-    f.write(str(np.array([force_array,time]).T))
+# np.set_printoptions(threshold=np.inf)
+# force_array = np.append(force_array, normalization*F)
+# time = np.append(time, t)
+# with open("force.txt", "w") as f:
+# #   f.write(str(force_array) + "\n" + str(time))
+#     f.write(str(np.array([force_array,time]).T))
 
 s = 'Time t = ' + repr(t)
 print(s)
@@ -660,8 +679,9 @@ plot_time += T/plot_freq
 
 # plt.figure()
 plt.subplot(2, 2, 4)
-plt.title(f"Force: {force_str} (t = {t:.2f})")
-plt.plot(time, force_array)
+plt.plot(time, drag_array, color='tab:blue',  label='Drag')
+plt.plot(time, lift_array, color='tab:orange', label='Lift')
+plt.legend()
 
 plt.show()
 #!tar -czvf results-NS.tar.gz results-NS
