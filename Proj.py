@@ -255,7 +255,7 @@ num_nnlin_iter = 5
 prec = "amg" if has_krylov_solver_preconditioner("amg") else "default"
 
 # Time step length
-dt = 0.5*mesh.hmin()
+dt = 0.25*mesh.hmin()
 
 
 # Define variational problem
@@ -472,7 +472,7 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
 # Time stepping
 # T = 35 # for 1 full pass of the train
-T = 6
+T = 40
 t = dt
 last_mesh_change_time = 0
 prev_calculated_force = 0.0
@@ -480,7 +480,7 @@ last_good_force = 0.0
 ema_force = 0.0
 ema_alpha = 0.10
 t_remesh_start = 0.0
-remesh_gap_steps = 40
+remesh_gap_steps = 50
 gap_counter = 0
 in_recovery = False
 stability_streak = 0
@@ -537,13 +537,11 @@ while t < T + DOLFIN_EPS:
         t_remesh_start = t
         stability_streak = 0
         gap_counter = 0
-        recovery_steps = 30
         recovery_buffer_force = []
         recovery_buffer_time = []
         if len(force_array) > 0:
             last_good_force = force_array[-1]
         ema_force = last_good_force
-        dt = dt / 4  # Reduce time step to help stabilize after remesh
 
     F = assemble(Force)
     calculated_force = normalization * F
@@ -566,8 +564,9 @@ while t < T + DOLFIN_EPS:
 
             gap_counter += 1
 
-            if gap_counter >= recovery_steps:
-                target_force = recovery_buffer_force[-1]                
+            if gap_counter >= remesh_gap_steps:
+                tail = recovery_buffer_force[-15:]
+                target_force = sorted(tail)[len(tail)//2]         
                 n_steps = len(recovery_buffer_time)
                 hermite_forces = []
                 hermite_times = []
@@ -587,7 +586,6 @@ while t < T + DOLFIN_EPS:
                 recovery_buffer_force = []
                 recovery_buffer_time = []
                 in_recovery = False
-                dt = dt * 4  # Restore original time step after recovery
                 
         else:
             # STATE: NORMAL OPERATION
