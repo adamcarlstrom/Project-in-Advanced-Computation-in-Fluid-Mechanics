@@ -36,7 +36,7 @@ set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
 # Define rectangular domain
 L = 8
-H = 4
+H = 3
 
 # Circular dimensions
 # xc = 1.0
@@ -45,7 +45,7 @@ H = 4
 
 # Train dimensions
 xc = 2.0
-yc = 0.75*H
+yc = 0.6*H
 yc2 = H - yc
 t_L = 2.0
 t_H = 0.2
@@ -102,8 +102,8 @@ def build_mesh(xc_top,xc_bot):
   mesh = generate_mesh(domain, resolution)
 
   # Local mesh refinement (specified by a cell marker)
-  no_levels = 0 
-  buffer = 0.25
+  no_levels = 0
+  buffer = 0.3
   for i in range(0,no_levels):
     cell_marker = MeshFunction("bool", mesh, mesh.topology().dim())
     cell_marker.set_all(False)
@@ -111,8 +111,11 @@ def build_mesh(xc_top,xc_bot):
       p = cell.midpoint()
       px,py = p[0],p[1]
     #   if p.distance(Point(xc, yc)) < 0.5:
-      if    ((xc - t_L/2.0 - buffer*3) < px < (xc + t_L/2.0 + t_R + buffer) and 
-            (yc - t_H/2.0 - buffer) < py < (yc + t_H/2.0 + buffer)):
+      if    ((xc_top - t_L/2.0 - buffer*2) < px < (xc_top + t_L/2.0 + t_R + buffer) and 
+            (yc - t_H/2.0 - buffer) < py < (yc + t_H/2.0 + buffer)
+            or 
+            (xc_bot - t_L/2.0 - buffer*2) < px < (xc_bot + t_L/2.0 + t_R + buffer) and
+            (yc2 - t_H/2.0 - buffer) < py < (yc2 + t_H/2.0 + buffer)):
           cell_marker[cell] = True
     mesh = refine(mesh, cell_marker)
 
@@ -282,8 +285,13 @@ Lp = rhs(Fp)
 
 
 # Define the direction of the force to be computed
-phi_x = 1.0 # drag
-phi_y = 0.0 # lift
+phi_x = 0.0 # drag
+phi_y = 1.0 # lift
+force_str = ""
+if(phi_x == 1.0):
+    force_str = "Drag"
+elif(phi_y == 1.0):
+    force_str = "Lift"
 
 # Create an empty function space for psi
 psi = Function(V)
@@ -463,7 +471,8 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
 
 # Time stepping
-T = 35 # for 1 full pass of the train
+# T = 35 # for 1 full pass of the train
+T = 6
 t = dt
 last_mesh_change_time = 0
 prev_calculated_force = 0.0
@@ -475,7 +484,10 @@ remesh_gap_steps = 40
 gap_counter = 0
 in_recovery = False
 stability_streak = 0
-required_stability_streak = 5
+recovery_steps = 200
+# Streak and tolerance set to easy targets, to allow the solver to stablize quicker
+# Goal is to have it stabilize after around 30 steps, any more than 50 is probably too long and indicates the need for parameter tuning
+required_stability_streak = 3 
 tolerance_for_stability = 0.05
 recovery_buffer_force = []
 recovery_buffer_time = []
@@ -525,11 +537,13 @@ while t < T + DOLFIN_EPS:
         t_remesh_start = t
         stability_streak = 0
         gap_counter = 0
+        recovery_steps = 30
         recovery_buffer_force = []
         recovery_buffer_time = []
         if len(force_array) > 0:
             last_good_force = force_array[-1]
         ema_force = last_good_force
+        dt = dt / 4  # Reduce time step to help stabilize after remesh
 
     F = assemble(Force)
     calculated_force = normalization * F
@@ -538,7 +552,8 @@ while t < T + DOLFIN_EPS:
     if t <= dt + DOLFIN_EPS:  # Catch the very first timestep safely
         prev_calculated_force = calculated_force
         
-    stabilized_force = 0.5 * (calculated_force + prev_calculated_force)
+    # stabilized_force = 0.5 * (calculated_force + prev_calculated_force)
+    stabilized_force=calculated_force
     prev_calculated_force = calculated_force
 
     # Smoothing Logic
@@ -550,22 +565,9 @@ while t < T + DOLFIN_EPS:
             recovery_buffer_time.append(t)
 
             gap_counter += 1
-            
-            ema_force = (1 - ema_alpha) * ema_force + ema_alpha * stabilized_force
-            
-            if abs(ema_force) > 1e-10:
-                relative_error = abs((stabilized_force - ema_force) / ema_force)
-            else:
-                relative_error = 1.0
-                
-            if relative_error < tolerance_for_stability:
-                stability_streak += 1
-            else:
-                stability_streak = 0
 
-            if stability_streak >= required_stability_streak or gap_counter > 150:
-                print(f"Solver stabilized after {gap_counter} steps. Backfilling Hermite curve...")
-                
+            if gap_counter >= recovery_steps:
+                target_force = recovery_buffer_force[-1]                
                 n_steps = len(recovery_buffer_time)
                 hermite_forces = []
                 hermite_times = []
@@ -573,7 +575,7 @@ while t < T + DOLFIN_EPS:
                 for i in range(1, n_steps + 1):
                     progress = i / float(n_steps)
                     h_weight = 3*(progress**2) - 2*(progress**3)
-                    artificial_force = (1.0 - h_weight) * last_good_force + h_weight * ema_force
+                    artificial_force = (1.0 - h_weight) * last_good_force + h_weight *target_force 
                     hermite_forces.append(artificial_force)
                     hermite_times.append(recovery_buffer_time[i - 1])  # reuse same timestamps
 
@@ -585,13 +587,14 @@ while t < T + DOLFIN_EPS:
                 recovery_buffer_force = []
                 recovery_buffer_time = []
                 in_recovery = False
+                dt = dt * 4  # Restore original time step after recovery
                 
         else:
             # STATE: NORMAL OPERATION
             force_array = np.append(force_array, stabilized_force)
             time = np.append(time, t)
         
-    if t > plot_time or mesh_Change and not in_recovery:
+    if (t > plot_time and not in_recovery) or (mesh_Change):
         s = 'Time t = ' + repr(t)
         print(s)
 
@@ -619,7 +622,7 @@ while t < T + DOLFIN_EPS:
 
         # plt.figure()
         plt.subplot(2, 2, 4)
-        plt.title(f"Force")
+        plt.title(f"Force: {force_str}")
         plt.plot(time, force_array)
 
     # Update time step
@@ -659,7 +662,7 @@ plot_time += T/plot_freq
 
 # plt.figure()
 plt.subplot(2, 2, 4)
-plt.title(f"Force:{t:.2f}")
+plt.title(f"Force: {force_str} (t = {t:.2f})")
 plt.plot(time, force_array)
 
 plt.show()
