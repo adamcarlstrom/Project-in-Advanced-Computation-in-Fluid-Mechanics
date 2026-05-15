@@ -309,7 +309,7 @@ file_p = File("results-NS/p.pvd")
 
 # Set plot frequency
 plot_time = 0
-plot_freq = 18
+plot_time_freq = 1.0
 
 # Force computation data
 drag_array = np.delete(np.array(0.0), 0)
@@ -375,7 +375,7 @@ def move_mesh(mesh, current_xc_top, current_xc_bot):
 # The function also rebuilds all necessary functions, boundary conditions, and variational forms that depend on the mesh, and returns a boolean indicating whether a remesh was performed or not.
 # The remeshing criterion is based on the minimum radius ratio of the mesh cells. If the minimum radius ratio falls below a threshold (0.2 in this case), the mesh is rebuilt.
 def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
-    global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force_drag, Force_lift, drag_array, lift_array, time, bcu, bcp, ds, u0, p0, u1, p1, dx, w
+    global mesh,t, V, Q, u, p, v, q, au, Lu, ap, Lp, Force_drag, Force_lift, drag_array, lift_array, time, bcu, bcp, ds, u0, p0, u1, p1, dx, w
     global dbc_objects_top, dbc_objects_bot
 
     mesh_Change = False
@@ -383,7 +383,7 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
     if min_q < 0.2:
         mesh_Change = True
-        print(f"Remeshing... min radius ratio: {min_q:.4f}")
+        print(f"Remeshing... min radius ratio: {min_q:.4f}, t= {t:.2f}")
 
         # Correct call — all four positional args, resolution is keyword
         mesh = build_mesh(current_xc_top, current_xc_bot)
@@ -566,7 +566,8 @@ while t < T + DOLFIN_EPS:
 
             gap_counter += 1
             
-            # 
+            # After a certain number of steps, we should be past the shockwave and can apply smoothing to transition from the last good force values to the new values, '
+            # before writing to the main arrays and exiting recovery.
             if gap_counter >= remesh_gap_steps:
                 tail_drag = recovery_buffer_dragforce[-15:]
                 target_force_drag = sorted(tail_drag)[len(tail_drag)//2]  
@@ -576,7 +577,8 @@ while t < T + DOLFIN_EPS:
                 hermite_forces_drag = []
                 hermite_forces_lift = []
                 hermite_times = []
-
+                
+                # Use a smoothing function with a progress-based weight to create a smooth transition from the last good force values to the new target values over the buffered time steps.    
                 for i in range(1, n_steps + 1):
                     progress = i / float(n_steps)
                     h_weight = 3*(progress**2) - 2*(progress**3)
@@ -596,40 +598,40 @@ while t < T + DOLFIN_EPS:
                 recovery_buffer_liftforce = []
                 recovery_buffer_time = []
                 in_recovery = False
-                
+                print(f"Remeshing recovery complete. Forces smoothed and recorded. t= {t:.2f}, next plot at t= {plot_time:.2f}  ")
+        
+        # If we are not in recovery, write the computed forces directly to the main arrays.
         else:
             drag_array = np.append(drag_array, calc_drag)
             lift_array = np.append(lift_array, calc_lift)
             time = np.append(time, t)
 
-        
+    # Print and plot solution at specified intervals,
+    # and also after remeshing events to check the solution and mesh quality. 
     if (t > plot_time and not in_recovery) or (mesh_Change):
         s = 'Time t = ' + repr(t)
         print(s)
 
         # Save solution to file
-        # file_u << u1
-        # file_p << p1
+        file_u << u1
+        file_p << p1
         
         plt.figure(figsize=(12, 10))
         plt.suptitle(f"Time t = {t:.2f} & Mesh Change: {mesh_Change}, last mesh change at t = {last_mesh_change_time:.2f}", fontsize=16)
 
         # Plot solution
         plt.subplot(2, 2, 1)
-        # plt.figure()
         plot(u1, title=f"Velocity")
 
-        # plt.figure()
         plt.subplot(2, 2, 2)
         plot(p1, title=f"Pressure")
 
-        # plt.figure()
         plt.subplot(2, 2, 3)
         plot(mesh, title=f"Mesh")
-
-        plot_time += T/plot_freq
-
-        # plt.figure()
+        if not mesh_Change:
+            plot_time += plot_time_freq
+        else:
+            plot_time = t + plot_time_freq/2 
         plt.subplot(2, 2, 4)
         plt.title(f"Force: (t = {t:.2f})")
         plt.plot(time, drag_array, color='tab:blue',  label='Drag')
@@ -640,19 +642,12 @@ while t < T + DOLFIN_EPS:
     u0.assign(u1)
     t += dt
 
-# np.set_printoptions(threshold=np.inf)
-# force_array = np.append(force_array, normalization*F)
-# time = np.append(time, t)
-# with open("force.txt", "w") as f:
-# #   f.write(str(force_array) + "\n" + str(time))
-#     f.write(str(np.array([force_array,time]).T))
-
 s = 'Time t = ' + repr(t)
 print(s)
 
 # Save solution to file
-# file_u << u1
-# file_p << p1
+file_u << u1
+file_p << p1
 
 plt.figure(figsize=(12, 10))
 
@@ -668,8 +663,6 @@ plot(p1, title=f"Pressure:{t:.2f}")
 # plt.figure()
 plt.subplot(2, 2, 3)
 plot(mesh, title=f"Mesh:{t:.2f}")
-
-plot_time += T/plot_freq
 
 # plt.figure()
 plt.subplot(2, 2, 4)
