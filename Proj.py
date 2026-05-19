@@ -72,12 +72,14 @@ right = Right()
 lower = Lower()
 upper = Upper()
 
-# Generate mesh (examples with and without a hole in the mesh)
+# Generate mesh 
 resolution = 64
-#mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
+
+# Build mesh method,using x-position of train(s) as input, to allow for remeshing with updated train position
 def build_mesh(xc_top, xc_bot):
     global yc, yc2, t_L, t_H, t_R, L, H, resolution, two_trains
 
+    # Build trains as rectangles with half-circles at the front
     p1 = Point(xc_top - t_L/2.0, yc - t_H/2.0)
     p2 = Point(xc_top + t_L/2.0, yc + t_H/2.0)
     body = Rectangle(p1, p2)
@@ -133,7 +135,6 @@ upper.mark(boundaries, 4)
 # plot(mesh)
 # plt.show()
 
-
 # Generate finite element spaces (for velocity and pressure)
 V = VectorFunctionSpace(mesh, "Lagrange", 1)
 Q = FunctionSpace(mesh, "Lagrange", 1)
@@ -177,7 +178,8 @@ class DirichletBoundaryObjects(SubDomain):
     def inside(self, x, on_boundary):
         return on_boundary and (not near(x[0], 0.0)) and (not near(x[0], L)) and (not near(x[1], 0.0)) and (not near(x[1], H))
 
-y_mid = 0.5 * (yc + yc2)   # = 0.5 * (3.0 + 1.0) = 2.0  — stable, never changes
+# Middle of both trains used to separate top and bottom train boundary conditions, as well as to determine mesh deformation zone
+y_mid = 0.5 * (yc + yc2)
 
 class DirichletBoundaryTopTrain(SubDomain):
     def inside(self, x, on_boundary):
@@ -244,10 +246,6 @@ p1 = Function(Q)
 # Define mesh deformation, mesh velocity = w/dt
 freq = 0.1
 t = 0.0
-# amp_x = 1.0e-2 # Move in x-direction
-# amp_y = 0.0
-# w = Expression(("amp_x*sin(2.0*pi*t*freq)*sin(pi*x[0]/L)","amp_y*sin(2.0*pi*t*freq-0.5*pi)*sin(pi*x[1]/H)"), L=L, H=H, t=t, amp_x=amp_x, amp_y=amp_y, freq=freq, element = V.ufl_element())
-
 w = Function(V) # for global mesh deformation
 
 # Set parameters for nonlinear and lienar solvers
@@ -312,6 +310,7 @@ normalization = -2.0/(1*D*vx*vx) # - 1000.0
 
 # Set plot frequency
 plot_time = 0
+plot_time_freq = 1.0
 
 # Force computation data
 drag_array = np.delete(np.array(0.0), 0)
@@ -319,6 +318,9 @@ lift_array = np.delete(np.array(0.0), 0)
 time = np.delete(np.array(0.0), 0)
 start_sample_time = 1.0
 
+# Move the mesh according to the train's velocity, using an ALE formulation
+# Mesh deformation is computed by solving a Laplace equation, with Dirichlet BCs set to the train velocity at the train surface and 0 at the outer walls, and then extrapolated to the whole mesh. The mesh velocity w is then used in the ALE formulation of the Navier-Stokes equations, and the mesh is moved using ALE.move().
+# The train's x-position is also updated and returned, to allow for remeshing with the train in the new position if needed. The mesh deformation zone is limited to a buffer around the train, to avoid excessive deformation of the whole mesh.
 def move_mesh(mesh, current_xc_top, current_xc_bot):
     global w, V
 
@@ -369,8 +371,12 @@ def move_mesh(mesh, current_xc_top, current_xc_bot):
 
     return current_xc_top + vx*dt, current_xc_bot - vx*dt
 
+# Remeshing function, called at each time step after mesh movement, to check mesh quality and rebuild the mesh if quality is too low. 
+# The current train positions are passed as arguments to allow for building the new mesh with the trains in the correct position.
+# The function also rebuilds all necessary functions, boundary conditions, and variational forms that depend on the mesh, and returns a boolean indicating whether a remesh was performed or not.
+# The remeshing criterion is based on the minimum radius ratio of the mesh cells. If the minimum radius ratio falls below a threshold (0.2 in this case), the mesh is rebuilt.
 def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
-    global mesh, V, Q, u, p, v, q, au, Lu, ap, Lp, Force_drag, Force_lift, drag_array, lift_array, time, bcu, bcp, ds, u0, p0, u1, p1, dx, w
+    global mesh,t, V, Q, u, p, v, q, au, Lu, ap, Lp, Force_drag, Force_lift, drag_array, lift_array, time, bcu, bcp, ds, u0, p0, u1, p1, dx, w
     global dbc_objects_top, dbc_objects_bot
 
     mesh_Change = False
@@ -378,7 +384,7 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
     if min_q < 0.15:
         mesh_Change = True
-        print(f"Remeshing... min radius ratio: {min_q:.4f}")
+        print(f"Remeshing... min radius ratio: {min_q:.4f}, t= {t:.2f}")
 
         # Correct call — all four positional args, resolution is keyword
         mesh = build_mesh(current_xc_top, current_xc_bot)
@@ -472,40 +478,30 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
 
 # Time stepping
-# T = 35 # for 1 full pass of the train
-T = 40
+T = 40 # for 1 full pass of the trainT = 40
 t = dt
 last_mesh_change_time = 0
-prev_calculated_force = 0.0
 last_good_drag_force = 0.0
 last_good_lift_force = 0.0
-ema_force = 0.0
-ema_alpha = 0.10
-t_remesh_start = 0.0
 remesh_gap_steps = 60
 gap_counter = 0
 in_recovery = False
-stability_streak = 0
-recovery_steps = 200
-# Streak and tolerance set to easy targets, to allow the solver to stablize quicker
-# Goal is to have it stabilize after around 30 steps, any more than 50 is probably too long and indicates the need for parameter tuning
-required_stability_streak = 3 
-tolerance_for_stability = 0.05
+
+# Buffers to hold force values during remeshing recovery, to allow for smoothing before writing to main arrays
 recovery_buffer_dragforce = []
 recovery_buffer_liftforce = []
 recovery_buffer_time = []
 skip_force_recording = False
 
+# Initial train positions for mesh movement and remeshing
 current_xc_top = xc
 current_xc_bot = L-xc
 
 while t < T + DOLFIN_EPS:
-
-    #s = 'Time t = ' + repr(t)
-    #print(s)
-
+    # Move the mesh according to the train's velocity, and get updated train positions
     current_xc_top,current_xc_bot = move_mesh(mesh,current_xc_top,current_xc_bot)
-
+    # Check mesh quality and remesh if needed, then rebuild all necessary functions, boundary conditions, and variational forms that depend on the mesh. 
+    # Get boolean indicating whether a remesh was performed or not.
     mesh_Change = remesh(current_xc_top,current_xc_bot, u0, p0, u1, p1)
 
     # Solve non-linear problem
@@ -534,16 +530,17 @@ while t < T + DOLFIN_EPS:
 
         k += 1
 
+    # Compute forces and write to arrays, with smoothing logic to handle remeshing shocks
     if mesh_Change:
         in_recovery = True
         last_mesh_change_time = t
-        gap_counter = remesh_gap_steps
-        t_remesh_start = t
-        stability_streak = 0
         gap_counter = 0
+        # Don't write the first post-remesh force values directly to the main arrays, as they will be inaccurate due to the shockwave. 
+        # Instead, buffer them and apply smoothing before writing to the main arrays after a few steps.
         recovery_buffer_dragforce = []
         recovery_buffer_liftforce = []
         recovery_buffer_time = []
+        # If we have good force values from the previous steps, we can use them as the starting point for the smoothing curve.
         if len(drag_array) > 0:
             last_good_drag_force = drag_array[-1]
             last_good_lift_force = lift_array[-1]
@@ -551,22 +548,26 @@ while t < T + DOLFIN_EPS:
     else:
         skip_force_recording = False
 
+    # Compute forces for current time step
     F_drag = assemble(Force_drag)
     F_lift = assemble(Force_lift)
     calc_drag = normalization * F_drag
     calc_lift = normalization * F_lift
 
-    # Smoothing Logic
+    # Only record forces after a certain start time,
+    # and handle smoothing of force values during remeshing recovery to avoid shockwave artifacts in the recorded data.
     if (t > start_sample_time) and not skip_force_recording:
+        # If we are in the middle of a remeshing recovery, 
+        # buffer the force values and apply smoothing before writing to the main arrays, to avoid shockwave artifacts.
         if in_recovery:
-            # STATE: SHOCKWAVE RECOVERY
-            # Buffer live values during recovery (don't write to main arrays yet)
             recovery_buffer_dragforce.append(calc_drag)
             recovery_buffer_liftforce.append(calc_lift)
             recovery_buffer_time.append(t)
 
             gap_counter += 1
-
+            
+            # After a certain number of steps, we should be past the shockwave and can apply smoothing to transition from the last good force values to the new values, '
+            # before writing to the main arrays and exiting recovery.
             if gap_counter >= remesh_gap_steps:
                 tail_drag = recovery_buffer_dragforce[-15:]
                 target_force_drag = sorted(tail_drag)[len(tail_drag)//2]  
@@ -576,7 +577,8 @@ while t < T + DOLFIN_EPS:
                 hermite_forces_drag = []
                 hermite_forces_lift = []
                 hermite_times = []
-
+                
+                # Use a smoothing function with a progress-based weight to create a smooth transition from the last good force values to the new target values over the buffered time steps.    
                 for i in range(1, n_steps + 1):
                     progress = i / float(n_steps)
                     h_weight = 3*(progress**2) - 2*(progress**3)
@@ -596,13 +598,16 @@ while t < T + DOLFIN_EPS:
                 recovery_buffer_liftforce = []
                 recovery_buffer_time = []
                 in_recovery = False
-                
+                print(f"Remeshing recovery complete. Forces smoothed and recorded. t= {t:.2f}, next plot at t= {plot_time:.2f}  ")
+        
+        # If we are not in recovery, write the computed forces directly to the main arrays.
         else:
             drag_array = np.append(drag_array, calc_drag)
             lift_array = np.append(lift_array, calc_lift)
             time = np.append(time, t)
 
-        
+    # Print and plot solution at specified intervals,
+    # and also after remeshing events to check the solution and mesh quality. 
     if (t > plot_time and not in_recovery) or (mesh_Change):
         s = 'Time t = ' + repr(t)
         print(s)
@@ -616,19 +621,17 @@ while t < T + DOLFIN_EPS:
 
         # Plot solution
         plt.subplot(2, 2, 1)
-        # plt.figure()
         plot(u1, title=f"Velocity")
 
-        # plt.figure()
         plt.subplot(2, 2, 2)
         plot(p1, title=f"Pressure")
 
-        # plt.figure()
         plt.subplot(2, 2, 3)
         plot(mesh, title=f"Mesh")
-
-        plot_time += 1.0
-        # plt.figure()
+        if not mesh_Change:
+            plot_time += plot_time_freq
+        else:
+            plot_time = t + plot_time_freq/2 
         plt.subplot(2, 2, 4)
         plt.title(f"Force: (t = {t:.2f})")
         plt.plot(time, drag_array, color='tab:blue',  label='Drag')
@@ -639,17 +642,10 @@ while t < T + DOLFIN_EPS:
     u0.assign(u1)
     t += dt
 
-# np.set_printoptions(threshold=np.inf)
-# force_array = np.append(force_array, normalization*F)
-# time = np.append(time, t)
-# with open("force.txt", "w") as f:
-# #   f.write(str(force_array) + "\n" + str(time))
-#     f.write(str(np.array([force_array,time]).T))
-
 s = 'Time t = ' + repr(t)
 print(s)
 
-# Save solution to file
+# # Save solution to file
 # file_u << u1
 # file_p << p1
 
