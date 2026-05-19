@@ -36,16 +36,11 @@ set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
 # Set to true for train crossing scenario
 # Set to false for lone train scenario
-two_trains = True
+two_trains = False
 
 # Define rectangular domain
 L = 8
 H = 3
-
-# Circular dimensions
-# xc = 1.0
-# yc = 0.5*H
-# rc = 0.2
 
 # Train dimensions
 xc = 2.0
@@ -78,7 +73,7 @@ lower = Lower()
 upper = Upper()
 
 # Generate mesh (examples with and without a hole in the mesh)
-resolution = 32
+resolution = 64
 #mesh = RectangleMesh(Point(0.0, 0.0), Point(L, H), L*resolution, H*resolution)
 def build_mesh(xc_top, xc_bot):
     global yc, yc2, t_L, t_H, t_R, L, H, resolution, two_trains
@@ -233,9 +228,9 @@ ds = Measure('ds', domain=mesh, subdomain_data=boundaries)
 dx = Measure('dx', domain=mesh)
 
 # Set viscosity
-nu = 8.0e-5
+nu = 4e-5
 
-# Re = U*D/nu = 0.1*0.4/8e-6 = 500
+# Re = U*D/nu = 0.1*0.2/4e-5 = 500
 
 
 # Define iteration functions
@@ -308,16 +303,15 @@ Force_lift = (inner((u1-u0)/dt + grad(um1)*(um1-w), psi_lift)*dx
 
 # Force normalization
 D = t_H
-normalization = -2.0/D
+normalization = -2.0/(1*D*vx*vx) # - 1000.0
 
 
 # Open files to export solution to Paraview
-file_u = File("results-NS/u.pvd")
-file_p = File("results-NS/p.pvd")
+# file_u = File("results-NS/u.pvd")
+# file_p = File("results-NS/p.pvd")
 
 # Set plot frequency
 plot_time = 0
-plot_freq = 18
 
 # Force computation data
 drag_array = np.delete(np.array(0.0), 0)
@@ -382,7 +376,7 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
     mesh_Change = False
     min_q, max_q = MeshQuality.radius_ratio_min_max(mesh)
 
-    if min_q < 0.2:
+    if min_q < 0.15:
         mesh_Change = True
         print(f"Remeshing... min radius ratio: {min_q:.4f}")
 
@@ -479,7 +473,7 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
 # Time stepping
 # T = 35 # for 1 full pass of the train
-T = 8
+T = 40
 t = dt
 last_mesh_change_time = 0
 prev_calculated_force = 0.0
@@ -633,8 +627,7 @@ while t < T + DOLFIN_EPS:
         plt.subplot(2, 2, 3)
         plot(mesh, title=f"Mesh")
 
-        plot_time += T/plot_freq
-
+        plot_time += 1.0
         # plt.figure()
         plt.subplot(2, 2, 4)
         plt.title(f"Force: (t = {t:.2f})")
@@ -675,8 +668,6 @@ plot(p1, title=f"Pressure:{t:.2f}")
 plt.subplot(2, 2, 3)
 plot(mesh, title=f"Mesh:{t:.2f}")
 
-plot_time += T/plot_freq
-
 # plt.figure()
 plt.subplot(2, 2, 4)
 plt.plot(time, drag_array, color='tab:blue',  label='Drag')
@@ -684,5 +675,6 @@ plt.plot(time, lift_array, color='tab:orange', label='Lift')
 plt.legend()
 
 plt.show()
-#!tar -czvf results-NS.tar.gz results-NS
-#files.download('results-NS.tar.gz')
+# import subprocess
+# subprocess.run(["tar", "-czvf", "results-NS.tar.gz", "results-NS"], check=True)
+# files.download('results-NS.tar.gz')
