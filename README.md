@@ -26,7 +26,7 @@ Because the simulated train velocities remain well below the Mach 0.3 compressib
 To account for the trains moving through the mesh without failing the solver, the fluid equations are mapped to an ALE framework. The mesh velocity ($w$) is incorporated into the convective term, allowing the finite elements to stretch and deform safely alongside the boundary displacement.
 
 ### 3. Finite Element Stabilization
-*Assumption Note: Based on the residual variables (`d1`, `d2`) defined in the project code, Streamline Upwind Petrov-Galerkin (SUPG) and Pressure-Stabilizing Petrov-Galerkin (PSPG) stabilization are assumed to be implemented to bypass the LBB condition for equal-order $P_1-P_1$ elements and handle convection-dominated flow.*
+*Assumption Note: Based on the residual variables (`d1`, `d2`) defined in the project code, Streamline Upwind Petrov-Galerkin (SUPG) and Pressure-Stabilizing Petrov-Galerkin (PSPG) stabilization are assumed to be implemented to bypass the LBB condition for equal-order* $P_1-P_1$ *elements and handle convection-dominated flow.*
 
 ---
 
