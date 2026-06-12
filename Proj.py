@@ -36,7 +36,7 @@ set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
 # Set to true for train crossing scenario
 # Set to false for lone train scenario
-two_trains = False
+two_trains = True
 
 # Define rectangular domain
 L = 8
@@ -478,7 +478,7 @@ def remesh(current_xc_top, current_xc_bot, u0_func, p0_func, u1_func, p1_func):
 
 
 # Time stepping
-T = 40 # for 1 full pass of the trainT = 40
+T = 40 # for 1 full pass of the train T = 40
 t = dt
 last_mesh_change_time = 0
 last_good_drag_force = 0.0
