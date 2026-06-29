@@ -5,6 +5,18 @@ This project simulates the highly transient aerodynamic forces generated during 
 
 The primary objective is to bypass standard Eulerian/Lagrangian mesh limitations (such as element inversion or the "snowplow" effect) by implementing localized mesh kinematics, periodic topological remeshing, and dynamic force smoothing.
 
+### 📸 Project Showcase
+#### Lone Train Scenario Results
+![Scenario1](./assets/lone_train_full.png)
+#### Train Crossing Scenario Results
+![Scenario2](./assets/crossing_scenario_full.png)
+##### Approach Stage
+![Scenario2.1](./assets/crossing_approach.png)
+##### Parallel Stage
+![Scenario2.2](./assets/crossing_parallel.png)
+##### Seperation Stage
+![Scenario2.3](./assets/crossing_seperation.png)
+
 ---
 
 ## Technical Stack
