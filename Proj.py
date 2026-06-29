@@ -36,7 +36,7 @@ set_log_level(LogLevel.WARNING) # to suppress dolfin output
 
 # Set to true for train crossing scenario
 # Set to false for lone train scenario
-two_trains = False
+two_trains = True
 
 # Define rectangular domain
 L = 8
